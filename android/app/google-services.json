@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "38863526262",
+    "project_id": "microfinance-loan-mgr",
+    "storage_bucket": "microfinance-loan-mgr.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:38863526262:android:a5c3b6338f4ccf9a76c257",
+        "android_client_info": {
+          "package_name": "com.nordicledger.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "38863526262-avj0e37joquh3t7eebetqv5gmtn27ff4.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.nordicledger.app",
+            "certificate_hash": "1538d758b04860d9f0d87550f221865d2e47490b"
+          }
+        },
+        {
+          "client_id": "38863526262-b1oat85ptpn4fllou818qn7m29vjjm6t.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDsiissDXbsbz_ZIWLM7CuiT29UYSr-qf8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "38863526262-b1oat85ptpn4fllou818qn7m29vjjm6t.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

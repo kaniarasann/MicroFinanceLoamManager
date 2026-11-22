@@ -1,0 +1,8 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+part 'firebase_providers.g.dart';
+
+/// The Firestore instance. Tests override it with `FakeFirebaseFirestore`.
+@Riverpod(keepAlive: true)
+FirebaseFirestore firestore(Ref ref) => FirebaseFirestore.instance;

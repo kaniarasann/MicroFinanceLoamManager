@@ -1,0 +1,360 @@
+rules_version = '2';
+
+// Nordic Ledger: company-scoped Firestore security rules.
+// Source of truth: living doc Section 2 ("Data Models", "Security rules outline",
+// "4. Write paths"). Money is int paise; civil dates are 'yyyy-MM-dd' strings.
+// Tests: firebase/test/rules.test.js (npm test, Firestore emulator).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------------------------------------------------------- helpers
+
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+
+    function companyPath(cid) { return /databases/$(database)/documents/companies/$(cid); }
+    function memberPath(cid, uid) { return /databases/$(database)/documents/companies/$(cid)/members/$(uid); }
+    function invitePath(code) { return /databases/$(database)/documents/invites/$(code); }
+
+    // Member of cid before this request.
+    function member(cid) { return signedIn() && exists(memberPath(cid, request.auth.uid)); }
+    // Member of cid once this batch / transaction is applied.
+    function memberAfter(cid) { return signedIn() && existsAfter(memberPath(cid, request.auth.uid)); }
+    // Owner of cid before this request (company.ownerUids).
+    function owner(cid) {
+      return signedIn() && request.auth.uid in get(companyPath(cid)).data.ownerUids;
+    }
+    function ownersBefore(cid) { return get(companyPath(cid)).data.ownerUids; }
+    function ownersAfter(cid) { return getAfter(companyPath(cid)).data.ownerUids; }
+    // Target uid is the only owner of cid (before this request).
+    function soleOwner(cid, uid) {
+      return ownersBefore(cid).size() == 1 && uid in ownersBefore(cid);
+    }
+
+    // Ledger audit stamp: recordedBy is the caller, recordedAt is serverTimestamp().
+    function stamped() {
+      return request.resource.data.recordedBy == request.auth.uid
+          && request.resource.data.recordedAt == request.time;
+    }
+
+    function isInt(v) { return v is int; }
+    function nonNeg(v) { return v is int && v >= 0; }
+    function isCivilDate(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+    function optCivilDate(v) { return v == null || isCivilDate(v); }
+
+    // Create: the new doc has only these keys.
+    function onlyKeys(keys) { return request.resource.data.keys().hasOnly(keys); }
+    // Update: the changed keys (added, removed or modified) are only these.
+    function affectedKeys() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanged(keys) { return affectedKeys().hasOnly(keys); }
+
+    function roles() { return ['owner', 'collector']; }
+
+    // Invite `code` was pending + unexpired before this request and is accepted by
+    // the caller for company `cid` with role `role` after it.
+    function inviteAcceptedBySelf(cid, code, role) {
+      let before = get(invitePath(code)).data;
+      let after = getAfter(invitePath(code)).data;
+      return before.status == 'pending'
+          && before.expiresAt > request.time
+          && before.companyId == cid
+          && before.role == role
+          && after.status == 'accepted'
+          && after.acceptedBy == request.auth.uid
+          && after.companyId == cid
+          && after.role == role;
+    }
+
+    // ------------------------------------------------------------ users
+
+    match /users/{uid} {
+      allow read, write: if isSelf(uid);
+
+      match /memberships/{cid} {
+        allow read: if isSelf(uid);
+        // Created in the same batch as (or after) the user's member doc.
+        allow create: if isSelf(uid)
+          && memberAfter(cid)
+          && onlyKeys(['companyId', 'companyName', 'role', 'joinedAt', 'schemaVersion'])
+          && request.resource.data.companyId == cid
+          && request.resource.data.role == getAfter(memberPath(cid, uid)).data.role;
+        // Owner keeps the denormalised role / company name in sync on role change.
+        allow update: if owner(cid)
+          && onlyChanged(['role', 'companyName'])
+          && request.resource.data.role == getAfter(memberPath(cid, uid)).data.role;
+        // Removal cleanup by an owner, or leaving / account deletion by the user.
+        allow delete: if isSelf(uid) || owner(cid);
+      }
+    }
+
+    match /user_settings/{uid} {
+      allow read, write: if isSelf(uid);
+    }
+
+    // ------------------------------------------------------------ invites
+
+    match /invites/{code} {
+      // Exact-code lookup for any signed-in user. Listing is only allowed to an
+      // owner of the company, and the query MUST be constrained by
+      // `companyId == <cid>` (Members & invites screen); an unconstrained or
+      // foreign-company query is denied, so codes can never be enumerated.
+      allow get: if signedIn();
+      allow list: if signedIn() && owner(resource.data.companyId);
+
+      allow create: if signedIn()
+        && code.matches('^[2-9A-HJKMNP-Z]{6}$')
+        && owner(request.resource.data.companyId)
+        && request.resource.data.status == 'pending'
+        && request.resource.data.role in roles()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.expiresAt > request.time
+        && request.resource.data.get('acceptedBy', null) == null
+        && request.resource.data.get('acceptedAt', null) == null;
+
+      allow update: if signedIn() && resource.data.status == 'pending' && (
+        // Revoke by an owner of the invite's company.
+        (owner(resource.data.companyId)
+          && request.resource.data.status == 'revoked'
+          && onlyChanged(['status']))
+        ||
+        // Accept by the invitee, in the same transaction that creates their member doc.
+        (resource.data.expiresAt > request.time
+          && request.resource.data.status == 'accepted'
+          && request.resource.data.acceptedBy == request.auth.uid
+          && request.resource.data.acceptedAt == request.time
+          && onlyChanged(['status', 'acceptedBy', 'acceptedAt'])
+          && existsAfter(memberPath(resource.data.companyId, request.auth.uid))
+          && getAfter(memberPath(resource.data.companyId, request.auth.uid)).data.inviteCode == code)
+      );
+
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ companies
+
+    match /companies/{cid} {
+
+      function validCompany(d) {
+        return d.name is string && d.name.size() >= 2 && d.name.size() <= 80
+            && d.ownerUids is list && d.ownerUids.size() > 0
+            && nonNeg(d.nextLoanNo);
+      }
+
+      allow read: if member(cid);
+
+      // Register company: same batch as the creator's owner member doc.
+      allow create: if signedIn()
+        && validCompany(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.ownerUids == [request.auth.uid]
+        && getAfter(memberPath(cid, request.auth.uid)).data.role == 'owner';
+
+      allow update: if
+        // Owner edits (incl. nextLoanNo increment, ownerUids on role change).
+        (owner(cid)
+          && validCompany(request.resource.data)
+          && !affectedKeys().hasAny(['createdBy', 'createdAt'])
+          && request.resource.data.nextLoanNo >= resource.data.nextLoanNo)
+        ||
+        // An invitee accepting an *owner* invite adds only themselves to ownerUids.
+        (signedIn()
+          && !member(cid)
+          && onlyChanged(['ownerUids'])
+          && request.resource.data.ownerUids.toSet()
+               == resource.data.ownerUids.toSet().union([request.auth.uid].toSet())
+          && getAfter(memberPath(cid, request.auth.uid)).data.role == 'owner'
+          && inviteAcceptedBySelf(cid,
+               getAfter(memberPath(cid, request.auth.uid)).data.inviteCode, 'owner'));
+
+      allow delete: if false;
+
+      // ---------------------------------------------------------- members
+
+      match /members/{memberUid} {
+
+        // Common shape + role/ownerUids consistency after the write.
+        function validNewMember() {
+          let d = request.resource.data;
+          return d.uid == memberUid
+              && onlyKeys(['uid', 'role', 'displayName', 'phoneE164', 'status',
+                           'inviteCode', 'invitedBy', 'joinedAt', 'schemaVersion'])
+              && d.role in roles()
+              && d.status == 'active'
+              && d.displayName is string
+              && ((d.role == 'owner') == (memberUid in ownersAfter(cid)));
+        }
+
+        allow read: if member(cid);
+
+        allow create: if validNewMember() && (
+          // Owner adds a member directly.
+          owner(cid)
+          ||
+          // Register company: creator's own owner doc, company created in the same batch.
+          (isSelf(memberUid)
+            && !exists(companyPath(cid))
+            && request.resource.data.role == 'owner'
+            && getAfter(companyPath(cid)).data.createdBy == memberUid
+            && ownersAfter(cid) == [memberUid])
+          ||
+          // Invite accept: client passes the code in `inviteCode`.
+          (isSelf(memberUid)
+            && request.resource.data.inviteCode is string
+            && inviteAcceptedBySelf(cid, request.resource.data.inviteCode,
+                                    request.resource.data.role))
+        );
+
+        allow update: if
+          // Owner changes role / profile; last-owner guard; ownerUids kept consistent.
+          (owner(cid)
+            && onlyChanged(['role', 'displayName', 'phoneE164'])
+            && request.resource.data.role in roles()
+            && !(soleOwner(cid, memberUid) && request.resource.data.role != 'owner')
+            && ((request.resource.data.role == 'owner') == (memberUid in ownersAfter(cid))))
+          ||
+          // A member edits their own display details.
+          (isSelf(memberUid) && member(cid) && onlyChanged(['displayName', 'phoneE164']));
+
+        // Removal by an owner, or leaving by self; never the last owner, and the
+        // company's ownerUids must no longer list the removed uid.
+        allow delete: if (owner(cid) || isSelf(memberUid))
+          && !soleOwner(cid, memberUid)
+          && !(memberUid in ownersAfter(cid));
+      }
+
+      // ---------------------------------------------------------- borrowers
+
+      match /borrowers/{borrowerId} {
+        function validBorrower(d) {
+          return d.name is string && d.name.size() > 0
+              && d.nameLower is string
+              && d.phoneE164 is string
+              && d.archived is bool;
+        }
+
+        allow read: if member(cid);
+        allow create: if owner(cid)
+          && validBorrower(request.resource.data)
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update: if owner(cid)
+          && validBorrower(request.resource.data)
+          && !affectedKeys().hasAny(['createdBy', 'createdAt']);
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- contracts
+
+      match /contracts/{contractId} {
+        function contractStatuses() { return ['active', 'closed', 'rolledOver', 'cancelled']; }
+
+        function validNewContract(d) {
+          return d.borrowerId is string
+              && isInt(d.loanNo)
+              && d.status == 'active'
+              && isInt(d.sanctionedPaise) && d.sanctionedPaise > 0
+              && isInt(d.upfrontPaise) && d.upfrontPaise >= 0 && d.upfrontPaise < d.sanctionedPaise
+              && nonNeg(d.netDisbursedPaise)
+              && (d.netDisbursedPaise == d.sanctionedPaise - d.upfrontPaise
+                  || (d.get('rolledOverFromContractId', null) is string
+                      && d.netDisbursedPaise < d.sanctionedPaise - d.upfrontPaise))
+              && isInt(d.installmentPaise) && d.installmentPaise > 0
+              && isInt(d.baseInstallmentCount) && d.baseInstallmentCount > 0
+              && d.baseInstallmentCount <= 366
+              && d.totalPaidPaise == 0 && isInt(d.totalPaidPaise)
+              && isCivilDate(d.firstDueDate) && isCivilDate(d.disbursedOn)
+              && d.createdBy == request.auth.uid;
+        }
+
+        allow read: if member(cid);
+
+        allow create: if owner(cid) && validNewContract(request.resource.data);
+
+        allow update: if
+          (owner(cid)
+            && !affectedKeys().hasAny(['createdBy', 'createdAt'])
+            && request.resource.data.status in contractStatuses()
+            && isInt(request.resource.data.sanctionedPaise)
+            && isInt(request.resource.data.upfrontPaise)
+            && isInt(request.resource.data.netDisbursedPaise)
+            && nonNeg(request.resource.data.totalPaidPaise))
+          ||
+          // Collector: payment batch (running total, close on zero outstanding).
+          (member(cid)
+            && onlyChanged(['totalPaidPaise', 'lastPaymentOn', 'updatedAt', 'status', 'closedAt'])
+            && nonNeg(request.resource.data.totalPaidPaise)
+            && request.resource.data.totalPaidPaise >= resource.data.totalPaidPaise
+            && optCivilDate(request.resource.data.get('lastPaymentOn', null))
+            && (request.resource.data.status == resource.data.status
+                || (resource.data.status in ['active', 'closed']
+                    && request.resource.data.status in ['active', 'closed'])));
+
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- installments
+
+      match /installments/{installmentId} {
+        function validNewInstallment(d) {
+          return d.contractId is string
+              && d.kind in ['base', 'rescheduled']
+              && isCivilDate(d.dueDate)
+              && isInt(d.amountDuePaise) && d.amountDuePaise > 0
+              && d.rescheduledOutPaise == 0 && isInt(d.rescheduledOutPaise)
+              && d.rescheduledToIds is list
+              && d.contractActive is bool
+              && isInt(d.seq) && d.seq > 0
+              && (d.kind == 'base' || d.rescheduledFromId is string);
+        }
+
+        allow read: if member(cid);
+        allow create: if member(cid)
+          && validNewInstallment(request.resource.data)
+          && (owner(cid) || request.resource.data.kind == 'rescheduled');
+        allow update: if member(cid)
+          && onlyChanged(['rescheduledOutPaise', 'rescheduledToIds', 'contractActive'])
+          && nonNeg(request.resource.data.rescheduledOutPaise)
+          && request.resource.data.rescheduledOutPaise <= resource.data.amountDuePaise
+          && request.resource.data.rescheduledToIds is list
+          && request.resource.data.contractActive is bool;
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- transactions
+      // Append-only ledger: immutable except the contractActive flag.
+
+      match /transactions/{txId} {
+        function txTypes() {
+          return ['disbursement', 'payment', 'rolloverSettlement', 'reversal', 'reschedule'];
+        }
+
+        function validNewTx(d) {
+          return d.contractId is string
+              && d.type in txTypes()
+              && nonNeg(d.amountPaise)
+              && (d.type != 'payment' || d.amountPaise > 0)
+              && (d.type != 'reversal' || (d.amountPaise > 0 && d.reversesTxId is string))
+              && (d.type != 'reschedule' || d.amountPaise == 0)
+              && isCivilDate(d.paidOn)
+              && d.contractActive is bool;
+        }
+
+        allow read: if member(cid);
+        allow create: if member(cid)
+          && stamped()
+          && validNewTx(request.resource.data)
+          && (request.resource.data.type in ['payment', 'reschedule'] || owner(cid));
+        allow update: if member(cid)
+          && onlyChanged(['contractActive'])
+          && request.resource.data.contractActive is bool;
+        allow delete: if false;
+      }
+    }
+
+    // ------------------------------------------------------------ default deny
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
