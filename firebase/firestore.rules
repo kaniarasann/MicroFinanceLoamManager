@@ -262,6 +262,7 @@ service cloud.firestore {
               && isInt(d.baseInstallmentCount) && d.baseInstallmentCount > 0
               && d.baseInstallmentCount <= 366
               && d.totalPaidPaise == 0 && isInt(d.totalPaidPaise)
+              && d.get('totalWaivedPaise', 0) == 0 && isInt(d.get('totalWaivedPaise', 0))
               && isCivilDate(d.firstDueDate) && isCivilDate(d.disbursedOn)
               && d.createdBy == request.auth.uid;
         }
@@ -277,7 +278,8 @@ service cloud.firestore {
             && isInt(request.resource.data.sanctionedPaise)
             && isInt(request.resource.data.upfrontPaise)
             && isInt(request.resource.data.netDisbursedPaise)
-            && nonNeg(request.resource.data.totalPaidPaise))
+            && nonNeg(request.resource.data.totalPaidPaise)
+            && nonNeg(request.resource.data.get('totalWaivedPaise', 0)))
           ||
           // Collector: payment batch (running total, close on zero outstanding).
           (member(cid)
@@ -325,7 +327,7 @@ service cloud.firestore {
 
       match /transactions/{txId} {
         function txTypes() {
-          return ['disbursement', 'payment', 'rolloverSettlement', 'reversal', 'reschedule'];
+          return ['disbursement', 'payment', 'rolloverSettlement', 'reversal', 'reschedule', 'waiver'];
         }
 
         function validNewTx(d) {
@@ -335,6 +337,9 @@ service cloud.firestore {
               && (d.type != 'payment' || d.amountPaise > 0)
               && (d.type != 'reversal' || (d.amountPaise > 0 && d.reversesTxId is string))
               && (d.type != 'reschedule' || d.amountPaise == 0)
+              // Early-closure waiver (owner only, see create): a reason is required.
+              && (d.type != 'waiver'
+                  || (d.amountPaise > 0 && d.get('note', null) is string && d.note.trim().size() > 0))
               && isCivilDate(d.paidOn)
               && d.contractActive is bool;
         }

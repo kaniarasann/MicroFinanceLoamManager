@@ -8,7 +8,13 @@ import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/screens/mpin_setup_screen.dart';
 import '../../features/auth/presentation/screens/mpin_unlock_screen.dart';
 import '../../features/auth/presentation/screens/sign_in_screen.dart';
+import '../../features/borrowers/presentation/screens/borrower_profile_screen.dart';
 import '../../features/company/application/company_providers.dart';
+import '../../domain/models/enums.dart';
+import '../../features/contracts/presentation/screens/contract_detail_screen.dart';
+import '../../features/payments/presentation/screens/record_payment_sheet.dart';
+import '../../features/rollover/presentation/screens/rollover_screen.dart';
+import '../../features/contracts/presentation/screens/create_contract_screen.dart';
 import '../../features/company/presentation/members_screen.dart';
 import '../../features/dashboard/presentation/screens/home_screen.dart';
 import '../../features/onboarding/application/onboarding_providers.dart';
@@ -33,6 +39,27 @@ abstract final class AppRoutes {
 
   /// In-app routes reachable once a company is ready.
   static const Set<String> companyShell = <String>{home, members};
+
+  /// Borrower profile (compact windows; tablets show it in the split view).
+  static const String borrowers = '/borrowers';
+  static String borrower(String id) => '$borrowers/${Uri.encodeComponent(id)}';
+
+  /// Contracts: create, detail, record payment (sheet / dialog) and
+  /// rollover (owner only).
+  static const String contracts = '/contracts';
+  static const String newContractPath = '$contracts/new';
+  static String newContract({String? borrowerId}) => borrowerId == null
+      ? newContractPath
+      : '$newContractPath?borrowerId=${Uri.encodeQueryComponent(borrowerId)}';
+  static String contract(String id) => '$contracts/${Uri.encodeComponent(id)}';
+  static String recordPayment(String id) => '${contract(id)}/pay';
+  static String rollover(String id) => '${contract(id)}/rollover';
+
+  /// Whether [path] is inside the company shell (static or parameterised).
+  static bool inCompanyShell(String path) =>
+      companyShell.contains(path) ||
+      path.startsWith('$borrowers/') ||
+      path.startsWith('$contracts/');
 
   static const String onboardingRegister = '/onboarding/register';
   static const String onboardingJoin = '/onboarding/join';
@@ -103,7 +130,7 @@ String? appRedirect({
     case CompanyGate.none:
       return onboarding ? null : AppRoutes.onboardingRegister;
     case CompanyGate.ready:
-      if (onboarding || AppRoutes.companyShell.contains(path)) return null;
+      if (onboarding || AppRoutes.inCompanyShell(path)) return null;
       if (devRoutes && path == AppRoutes.devGallery) return null;
       return AppRoutes.home;
   }
@@ -199,6 +226,45 @@ GoRouter appRouter(Ref ref) {
         path: AppRoutes.home,
         builder: (BuildContext context, GoRouterState state) =>
             const HomeScreen(),
+      ),
+      GoRoute(
+        path: '${AppRoutes.borrowers}/:id',
+        builder: (BuildContext context, GoRouterState state) =>
+            BorrowerProfileScreen(borrowerId: state.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: AppRoutes.newContractPath,
+        // Owner only (the rules enforce it too); collectors go home.
+        redirect: (BuildContext context, GoRouterState state) =>
+            ref.read(currentRoleProvider) == Role.collector
+            ? AppRoutes.home
+            : null,
+        builder: (BuildContext context, GoRouterState state) =>
+            CreateContractScreen(
+              borrowerId: state.uri.queryParameters['borrowerId'],
+            ),
+      ),
+      GoRoute(
+        path: '${AppRoutes.contracts}/:id',
+        builder: (BuildContext context, GoRouterState state) =>
+            ContractDetailScreen(contractId: state.pathParameters['id']!),
+        routes: <RouteBase>[
+          GoRoute(
+            path: 'pay',
+            pageBuilder: (BuildContext context, GoRouterState state) =>
+                recordPaymentPage(state),
+          ),
+          GoRoute(
+            path: 'rollover',
+            // Owner only (the rules enforce it too); collectors go back.
+            redirect: (BuildContext context, GoRouterState state) =>
+                ref.read(currentRoleProvider) == Role.collector
+                ? AppRoutes.contract(state.pathParameters['id']!)
+                : null,
+            builder: (BuildContext context, GoRouterState state) =>
+                RolloverScreen(contractId: state.pathParameters['id']!),
+          ),
+        ],
       ),
       GoRoute(
         path: AppRoutes.members,

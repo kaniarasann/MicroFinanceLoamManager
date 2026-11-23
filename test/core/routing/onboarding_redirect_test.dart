@@ -159,6 +159,29 @@ void main() {
       expect(find.text('A Co'), findsOneWidget);
       expect(find.text('· Owner'), findsOneWidget);
       expect(find.text('Dashboard coming in Sprint 7'), findsOneWidget);
+
+      // Sprint 5: the Borrowers destination shows the borrower list.
+      await tester.tap(find.text('Borrowers').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Add your first borrower'), findsOneWidget);
+    });
+
+    test('Sprint 5 borrower and contract routes stay in the shell', () {
+      expect(go(AppRoutes.borrower('b-1')), isNull);
+      expect(go(AppRoutes.newContract(borrowerId: 'b-1')), isNull);
+      expect(go(AppRoutes.contract('c-1')), isNull);
+      expect(go(AppRoutes.recordPayment('c-1')), isNull);
+      expect(go('/borrowers'), AppRoutes.home);
+      expect(
+        go(AppRoutes.borrower('b-1'), company: CompanyGate.none),
+        AppRoutes.onboardingRegister,
+      );
+      expect(
+        AppRoutes.newContract(borrowerId: 'b 1'),
+        '/contracts/new?borrowerId=b+1',
+      );
+      expect(AppRoutes.recordPayment('c1'), '/contracts/c1/pay');
     });
 
     testWidgets('join deep link pre-fills the code boxes', (

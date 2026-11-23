@@ -171,17 +171,31 @@ void main() {
       expect(list.map((Membership m) => m.id), <String>['a', 'b']);
     });
 
-    test('watchMember emits null once the member doc is deleted', () async {
+    test('watchMemberDoc reports server snapshots, then a missing doc '
+        '(the repository never decides "removed")', () async {
       await OnboardingFixtures.membership(db, uid: 'u1', cid: 'a', name: 'A');
-      final events = <Member?>[];
-      final sub = repo().watchMember('a', 'u1').listen(events.add);
+      final events = <MemberDocEvent>[];
+      final sub = repo().watchMemberDoc('a', 'u1').listen(events.add);
       await pumpEventQueue();
       // The fake only notifies listeners of the same converted type.
       await TypedRefs(db).member('a', 'u1').delete();
       await pumpEventQueue();
       await sub.cancel();
-      expect(events.first?.role, Role.owner);
-      expect(events.last, isNull);
+      final first = events.first as MemberDocSnapshot;
+      expect(first.member?.role, Role.owner);
+      expect(first.serverConfirmed, isTrue);
+      final last = events.last as MemberDocSnapshot;
+      expect(last.member, isNull);
+      // The membership index doc is untouched.
+      expect((await db.doc('users/u1/memberships/a').get()).exists, isTrue);
+    });
+
+    test('fetchMemberDocFromServer: exists / missing', () async {
+      await OnboardingFixtures.membership(db, uid: 'u1', cid: 'a', name: 'A');
+      final hit = await repo().fetchMemberDocFromServer('a', 'u1');
+      expect((hit! as MemberDocSnapshot).member?.uid, 'u1');
+      final miss = await repo().fetchMemberDocFromServer('zz', 'u1');
+      expect((miss! as MemberDocSnapshot).member, isNull);
     });
   });
 

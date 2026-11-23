@@ -142,8 +142,8 @@ void main() {
   });
 
   group('removed member', () {
-    test('member doc deleted: switch to the next company, notify once, '
-        'schedule cache clear, clean up the membership', () async {
+    test('member doc deleted (server-confirmed): switch to the next company, '
+        'notify once, schedule cache clear, KEEP the membership doc', () async {
       final h = AuthHarness(signedIn: kAsha);
       await seedTwo(h);
       final c = await start(h);
@@ -164,10 +164,9 @@ void main() {
       expect(await CacheResetFlag(h.storage).isPending(), isTrue);
       final settings = (await h.db.doc('user_settings/$uid').get()).data()!;
       expect(settings['activeCompanyId'], 'b');
-      expect(
-        (await h.db.doc('users/$uid/memberships/a').get()).exists,
-        isFalse,
-      );
+      // Never deleted by the client; hidden for this session instead.
+      expect((await h.db.doc('users/$uid/memberships/a').get()).exists, isTrue);
+      expect((await h.db.doc('users/$uid/memberships/b').get()).exists, isTrue);
       expect(
         c.read(membershipsProvider).value!.map((Membership m) => m.id),
         <String>['b'],
@@ -196,7 +195,30 @@ void main() {
       expect(await CacheResetFlag(h.storage).isPending(), isTrue);
     });
 
-    test('membership doc deleted by the owner also switches out', () async {
+    test('owner removeMember (membership index + member doc) switches out '
+        'and notifies once', () async {
+      final h = AuthHarness(signedIn: kAsha);
+      await seedTwo(h);
+      final c = await start(h);
+      final notices = <String?>[];
+      c.listen(companyNoticeProvider, (_, String? n) => notices.add(n));
+
+      // Index first: the guard's server check then sees the member doc
+      // gone too, as with the real removeMember batch.
+      final refs = TypedRefs(h.db);
+      await refs.membership(uid, 'a').delete();
+      await refs.member('a', uid).delete();
+      await pumpEventQueue();
+
+      expect(c.read(activeCompanyIdProvider).value, 'b');
+      expect(notices.whereType<String>(), <String>[
+        'You no longer have access to A Co',
+      ]);
+      expect(await CacheResetFlag(h.storage).isPending(), isTrue);
+    });
+
+    test('membership index gone but the server still has the member doc: '
+        'not a removal (no notice, no cache clear)', () async {
       final h = AuthHarness(signedIn: kAsha);
       await seedTwo(h);
       final c = await start(h);
@@ -207,9 +229,9 @@ void main() {
       await pumpEventQueue();
 
       expect(c.read(activeCompanyIdProvider).value, 'b');
-      expect(notices.whereType<String>(), <String>[
-        'You no longer have access to A Co',
-      ]);
+      expect(notices, isEmpty);
+      expect(await CacheResetFlag(h.storage).isPending(), isFalse);
+      expect(c.read(removedCompaniesProvider), isEmpty);
     });
 
     test('a normal switch is not a removal', () async {

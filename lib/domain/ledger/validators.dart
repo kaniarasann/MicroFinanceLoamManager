@@ -36,6 +36,7 @@ abstract final class LedgerFields {
   static const String installmentCount = 'installmentCount';
   static const String firstDueDate = 'firstDueDate';
   static const String amount = 'amount';
+  static const String newDueDate = 'newDueDate';
 }
 
 /// Validates new-contract terms. Returns every failure (empty = valid).
@@ -159,6 +160,41 @@ List<ValidationError> validateContractTerms({
       const ValidationError(
         LedgerFields.firstDueDate,
         'First due date cannot be before the disbursement date.',
+      ),
+    );
+  }
+  return errors;
+}
+
+/// A manual reschedule moves `0 < amount ≤ remaining` of one row to
+/// `newDueDate ≥ today`.
+List<ValidationError> validateReschedule({
+  required Money amount,
+  required Money remaining,
+  required CivilDate newDueDate,
+  required CivilDate today,
+}) {
+  final errors = <ValidationError>[];
+  if (!amount.isPositive) {
+    errors.add(
+      const ValidationError(
+        LedgerFields.amount,
+        'Amount must be more than ₹0.',
+      ),
+    );
+  } else if (amount > remaining) {
+    errors.add(
+      ValidationError(
+        LedgerFields.amount,
+        'Amount cannot exceed the unpaid ${formatInr(remaining)}.',
+      ),
+    );
+  }
+  if (newDueDate.isBefore(today)) {
+    errors.add(
+      const ValidationError(
+        LedgerFields.newDueDate,
+        'The new date cannot be in the past.',
       ),
     );
   }

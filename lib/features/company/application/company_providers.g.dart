@@ -442,12 +442,185 @@ final class ActiveCompanyProvider
 
 String _$activeCompanyHash() => r'b28e8f2b49ce913e0645f00bc5bd5a6f1fa1537d';
 
+/// Company ids whose member doc the server confirmed (exists, not from
+/// cache, no pending writes) in this app session. Reset per user. Removal
+/// can only be concluded for a company in this set.
+
+@ProviderFor(serverConfirmedMembers)
+final serverConfirmedMembersProvider = ServerConfirmedMembersProvider._();
+
+/// Company ids whose member doc the server confirmed (exists, not from
+/// cache, no pending writes) in this app session. Reset per user. Removal
+/// can only be concluded for a company in this set.
+
+final class ServerConfirmedMembersProvider
+    extends $FunctionalProvider<Set<String>, Set<String>, Set<String>>
+    with $Provider<Set<String>> {
+  /// Company ids whose member doc the server confirmed (exists, not from
+  /// cache, no pending writes) in this app session. Reset per user. Removal
+  /// can only be concluded for a company in this set.
+  ServerConfirmedMembersProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'serverConfirmedMembersProvider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$serverConfirmedMembersHash();
+
+  @$internal
+  @override
+  $ProviderElement<Set<String>> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  Set<String> create(Ref ref) {
+    return serverConfirmedMembers(ref);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(Set<String> value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<Set<String>>(value),
+    );
+  }
+}
+
+String _$serverConfirmedMembersHash() =>
+    r'aa57853a12f10a87be1cc6704491e96130597722';
+
+/// Re-attach delays for the member-doc listener (overridden in tests).
+
+@ProviderFor(memberRetryBackoff)
+final memberRetryBackoffProvider = MemberRetryBackoffProvider._();
+
+/// Re-attach delays for the member-doc listener (overridden in tests).
+
+final class MemberRetryBackoffProvider
+    extends $FunctionalProvider<RetryBackoff, RetryBackoff, RetryBackoff>
+    with $Provider<RetryBackoff> {
+  /// Re-attach delays for the member-doc listener (overridden in tests).
+  MemberRetryBackoffProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'memberRetryBackoffProvider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$memberRetryBackoffHash();
+
+  @$internal
+  @override
+  $ProviderElement<RetryBackoff> $createElement($ProviderPointer pointer) =>
+      $ProviderElement(pointer);
+
+  @override
+  RetryBackoff create(Ref ref) {
+    return memberRetryBackoff(ref);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(RetryBackoff value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<RetryBackoff>(value),
+    );
+  }
+}
+
+String _$memberRetryBackoffHash() =>
+    r'82069c2481fd1735cd7aa013c1c9bdba6e4d2182';
+
+/// Companies whose register batch is still waiting for the server ack. The
+/// member-doc listener is not attached for them until the ack (or the
+/// offline timeout), so the first server evaluation can never be a
+/// "not a member yet" denial.
+
+@ProviderFor(PendingRegistrations)
+final pendingRegistrationsProvider = PendingRegistrationsProvider._();
+
+/// Companies whose register batch is still waiting for the server ack. The
+/// member-doc listener is not attached for them until the ack (or the
+/// offline timeout), so the first server evaluation can never be a
+/// "not a member yet" denial.
+final class PendingRegistrationsProvider
+    extends $NotifierProvider<PendingRegistrations, Set<String>> {
+  /// Companies whose register batch is still waiting for the server ack. The
+  /// member-doc listener is not attached for them until the ack (or the
+  /// offline timeout), so the first server evaluation can never be a
+  /// "not a member yet" denial.
+  PendingRegistrationsProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'pendingRegistrationsProvider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$pendingRegistrationsHash();
+
+  @$internal
+  @override
+  PendingRegistrations create() => PendingRegistrations();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(Set<String> value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<Set<String>>(value),
+    );
+  }
+}
+
+String _$pendingRegistrationsHash() =>
+    r'a11de862fb117437e7e9ba4212db77f79e4a1e3b';
+
+/// Companies whose register batch is still waiting for the server ack. The
+/// member-doc listener is not attached for them until the ack (or the
+/// offline timeout), so the first server evaluation can never be a
+/// "not a member yet" denial.
+
+abstract class _$PendingRegistrations extends $Notifier<Set<String>> {
+  Set<String> build();
+  @$mustCallSuper
+  @override
+  void runBuild() {
+    final ref = this.ref as $Ref<Set<String>, Set<String>>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<Set<String>, Set<String>>,
+              Set<String>,
+              Object?,
+              Object?
+            >;
+    element.handleCreate(ref, build);
+  }
+}
+
 /// The caller's member doc in the active company, tagged with its cid.
+/// See [watchMemberAccess] for the (conservative) removal rule.
 
 @ProviderFor(activeMemberWatch)
 final activeMemberWatchProvider = ActiveMemberWatchProvider._();
 
 /// The caller's member doc in the active company, tagged with its cid.
+/// See [watchMemberAccess] for the (conservative) removal rule.
 
 final class ActiveMemberWatchProvider
     extends
@@ -458,6 +631,7 @@ final class ActiveMemberWatchProvider
         >
     with $FutureModifier<MemberWatch?>, $StreamProvider<MemberWatch?> {
   /// The caller's member doc in the active company, tagged with its cid.
+  /// See [watchMemberAccess] for the (conservative) removal rule.
   ActiveMemberWatchProvider._()
     : super(
         from: null,
@@ -484,7 +658,7 @@ final class ActiveMemberWatchProvider
   }
 }
 
-String _$activeMemberWatchHash() => r'82499118f85af35cfb6ed2d779137625b315cce2';
+String _$activeMemberWatchHash() => r'27039722c227f8c979ba9ee3e9c185364873e3ed';
 
 /// The caller's member doc in the active company (null while unknown).
 
@@ -530,7 +704,7 @@ final class CurrentMemberProvider
   }
 }
 
-String _$currentMemberHash() => r'f632cd71565269f56dd8aa8264bb8710c9272572';
+String _$currentMemberHash() => r'cebf2c364b98816510b7638498a1a24eb9cadd1c';
 
 /// The caller's role in the active company. The member doc is the source of
 /// truth (rules check it); the membership index is the offline fallback.
@@ -690,40 +864,67 @@ abstract class _$CompanyNotice extends $Notifier<String?> {
 
 /// Removed-member handling. Watched by the root widget.
 ///
-/// - The active company's member doc is confirmed gone (server not-exists or
-///   permission-denied): hide that company ([RemovedCompanies]) and clean up
-///   the user's own membership doc.
-/// - The active company disappears from the memberships (an owner deleted
-///   it, or the step above): show [lostAccessMessage] once, switch
-///   `user_settings.activeCompanyId` to the next membership (or null, which
-///   routes to onboarding), and schedule a Firestore cache clear for the
-///   next cold start.
+/// A removal is acted on ONLY when it is server-confirmed (see
+/// [watchMemberAccess]): the server confirmed the member doc earlier in
+/// this session and later says it is gone / denies access.
+///
+/// - The active company's member watch reports a confirmed removal.
+/// - Or the active company drops out of the membership index (the owner's
+///   removeMember batch deletes it together with the member doc) AND the
+///   company was server-confirmed this session AND a fresh server read of
+///   the member doc says not-exists / permission-denied. An offline or
+///   failed check is "unknown" and does nothing.
+///
+/// On a confirmed removal the guard only: hides the company for this
+/// session ([RemovedCompanies]), shows [lostAccessMessage] once, switches
+/// `user_settings.activeCompanyId` to the next membership (or null, which
+/// routes to onboarding) and schedules a Firestore cache clear. It NEVER
+/// deletes `users/{uid}/memberships/*`: the owner's removeMember batch is
+/// the only thing that deletes another user's membership doc.
 
 @ProviderFor(CompanyAccessGuard)
 final companyAccessGuardProvider = CompanyAccessGuardProvider._();
 
 /// Removed-member handling. Watched by the root widget.
 ///
-/// - The active company's member doc is confirmed gone (server not-exists or
-///   permission-denied): hide that company ([RemovedCompanies]) and clean up
-///   the user's own membership doc.
-/// - The active company disappears from the memberships (an owner deleted
-///   it, or the step above): show [lostAccessMessage] once, switch
-///   `user_settings.activeCompanyId` to the next membership (or null, which
-///   routes to onboarding), and schedule a Firestore cache clear for the
-///   next cold start.
+/// A removal is acted on ONLY when it is server-confirmed (see
+/// [watchMemberAccess]): the server confirmed the member doc earlier in
+/// this session and later says it is gone / denies access.
+///
+/// - The active company's member watch reports a confirmed removal.
+/// - Or the active company drops out of the membership index (the owner's
+///   removeMember batch deletes it together with the member doc) AND the
+///   company was server-confirmed this session AND a fresh server read of
+///   the member doc says not-exists / permission-denied. An offline or
+///   failed check is "unknown" and does nothing.
+///
+/// On a confirmed removal the guard only: hides the company for this
+/// session ([RemovedCompanies]), shows [lostAccessMessage] once, switches
+/// `user_settings.activeCompanyId` to the next membership (or null, which
+/// routes to onboarding) and schedules a Firestore cache clear. It NEVER
+/// deletes `users/{uid}/memberships/*`: the owner's removeMember batch is
+/// the only thing that deletes another user's membership doc.
 final class CompanyAccessGuardProvider
     extends $NotifierProvider<CompanyAccessGuard, void> {
   /// Removed-member handling. Watched by the root widget.
   ///
-  /// - The active company's member doc is confirmed gone (server not-exists or
-  ///   permission-denied): hide that company ([RemovedCompanies]) and clean up
-  ///   the user's own membership doc.
-  /// - The active company disappears from the memberships (an owner deleted
-  ///   it, or the step above): show [lostAccessMessage] once, switch
-  ///   `user_settings.activeCompanyId` to the next membership (or null, which
-  ///   routes to onboarding), and schedule a Firestore cache clear for the
-  ///   next cold start.
+  /// A removal is acted on ONLY when it is server-confirmed (see
+  /// [watchMemberAccess]): the server confirmed the member doc earlier in
+  /// this session and later says it is gone / denies access.
+  ///
+  /// - The active company's member watch reports a confirmed removal.
+  /// - Or the active company drops out of the membership index (the owner's
+  ///   removeMember batch deletes it together with the member doc) AND the
+  ///   company was server-confirmed this session AND a fresh server read of
+  ///   the member doc says not-exists / permission-denied. An offline or
+  ///   failed check is "unknown" and does nothing.
+  ///
+  /// On a confirmed removal the guard only: hides the company for this
+  /// session ([RemovedCompanies]), shows [lostAccessMessage] once, switches
+  /// `user_settings.activeCompanyId` to the next membership (or null, which
+  /// routes to onboarding) and schedules a Firestore cache clear. It NEVER
+  /// deletes `users/{uid}/memberships/*`: the owner's removeMember batch is
+  /// the only thing that deletes another user's membership doc.
   CompanyAccessGuardProvider._()
     : super(
         from: null,
@@ -752,18 +953,27 @@ final class CompanyAccessGuardProvider
 }
 
 String _$companyAccessGuardHash() =>
-    r'74920375b63295608493d33def56e294197135b3';
+    r'2e84eb08b22c4b15b3ee295737aba6332c4ef293';
 
 /// Removed-member handling. Watched by the root widget.
 ///
-/// - The active company's member doc is confirmed gone (server not-exists or
-///   permission-denied): hide that company ([RemovedCompanies]) and clean up
-///   the user's own membership doc.
-/// - The active company disappears from the memberships (an owner deleted
-///   it, or the step above): show [lostAccessMessage] once, switch
-///   `user_settings.activeCompanyId` to the next membership (or null, which
-///   routes to onboarding), and schedule a Firestore cache clear for the
-///   next cold start.
+/// A removal is acted on ONLY when it is server-confirmed (see
+/// [watchMemberAccess]): the server confirmed the member doc earlier in
+/// this session and later says it is gone / denies access.
+///
+/// - The active company's member watch reports a confirmed removal.
+/// - Or the active company drops out of the membership index (the owner's
+///   removeMember batch deletes it together with the member doc) AND the
+///   company was server-confirmed this session AND a fresh server read of
+///   the member doc says not-exists / permission-denied. An offline or
+///   failed check is "unknown" and does nothing.
+///
+/// On a confirmed removal the guard only: hides the company for this
+/// session ([RemovedCompanies]), shows [lostAccessMessage] once, switches
+/// `user_settings.activeCompanyId` to the next membership (or null, which
+/// routes to onboarding) and schedules a Firestore cache clear. It NEVER
+/// deletes `users/{uid}/memberships/*`: the owner's removeMember batch is
+/// the only thing that deletes another user's membership doc.
 
 abstract class _$CompanyAccessGuard extends $Notifier<void> {
   void build();

@@ -3,11 +3,16 @@ import 'dart:developer' as developer;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../domain/models/models.dart';
 import '../../auth/application/session_controller.dart';
 import '../../onboarding/application/onboarding_providers.dart';
+import '../../onboarding/data/company_repository.dart';
 import '../../onboarding/data/invite_repository.dart';
+import 'member_access_monitor.dart';
+
+export 'member_access_monitor.dart' show MemberWatch, RetryBackoff;
 
 part 'company_providers.g.dart';
 
@@ -139,26 +144,56 @@ Stream<Company?> activeCompany(Ref ref) {
   return ref.watch(companyRepositoryProvider).watchCompany(cid);
 }
 
-/// One emission of the caller's member doc in company [cid].
-final class MemberWatch {
-  const MemberWatch(this.cid, this.member);
+/// Company ids whose member doc the server confirmed (exists, not from
+/// cache, no pending writes) in this app session. Reset per user. Removal
+/// can only be concluded for a company in this set.
+@Riverpod(keepAlive: true)
+Set<String> serverConfirmedMembers(Ref ref) {
+  ref.watch(currentUidProvider);
+  return <String>{};
+}
 
-  final String cid;
+/// Re-attach delays for the member-doc listener (overridden in tests).
+@Riverpod(keepAlive: true)
+RetryBackoff memberRetryBackoff(Ref ref) => defaultMemberRetryBackoff;
 
-  /// Null = confirmed gone (server says not-exists, or permission-denied).
-  final Member? member;
+/// Companies whose register batch is still waiting for the server ack. The
+/// member-doc listener is not attached for them until the ack (or the
+/// offline timeout), so the first server evaluation can never be a
+/// "not a member yet" denial.
+@Riverpod(keepAlive: true)
+class PendingRegistrations extends _$PendingRegistrations {
+  @override
+  Set<String> build() {
+    ref.watch(currentUidProvider);
+    return const <String>{};
+  }
+
+  void add(String cid) => state = <String>{...state, cid};
+
+  void remove(String cid) {
+    if (state.contains(cid)) state = <String>{...state}..remove(cid);
+  }
 }
 
 /// The caller's member doc in the active company, tagged with its cid.
+/// See [watchMemberAccess] for the (conservative) removal rule.
 @Riverpod(keepAlive: true)
 Stream<MemberWatch?> activeMemberWatch(Ref ref) {
   final uid = ref.watch(currentUidProvider);
   final cid = ref.watch(activeCompanyIdProvider).value;
   if (uid == null || cid == null) return Stream<MemberWatch?>.value(null);
-  return ref
-      .watch(companyRepositoryProvider)
-      .watchMember(cid, uid)
-      .map((Member? m) => MemberWatch(cid, m));
+  if (ref.watch(pendingRegistrationsProvider).contains(cid)) {
+    // Unknown for now; the role falls back to the membership index.
+    return Stream<MemberWatch?>.value(MemberWatch(cid, null));
+  }
+  final repo = ref.watch(companyRepositoryProvider);
+  return watchMemberAccess(
+    cid: cid,
+    attach: () => repo.watchMemberDoc(cid, uid),
+    confirmed: ref.watch(serverConfirmedMembersProvider),
+    backoff: ref.watch(memberRetryBackoffProvider),
+  );
 }
 
 /// The caller's member doc in the active company (null while unknown).
@@ -166,7 +201,7 @@ Stream<MemberWatch?> activeMemberWatch(Ref ref) {
 Member? currentMember(Ref ref) {
   final cid = ref.watch(activeCompanyIdProvider).value;
   final watch = ref.watch(activeMemberWatchProvider).value;
-  if (watch == null || watch.cid != cid) return null;
+  if (watch == null || watch.cid != cid || watch.removed) return null;
   return watch.member;
 }
 
@@ -201,18 +236,26 @@ String lostAccessMessage(String companyName) =>
 
 /// Removed-member handling. Watched by the root widget.
 ///
-/// - The active company's member doc is confirmed gone (server not-exists or
-///   permission-denied): hide that company ([RemovedCompanies]) and clean up
-///   the user's own membership doc.
-/// - The active company disappears from the memberships (an owner deleted
-///   it, or the step above): show [lostAccessMessage] once, switch
-///   `user_settings.activeCompanyId` to the next membership (or null, which
-///   routes to onboarding), and schedule a Firestore cache clear for the
-///   next cold start.
+/// A removal is acted on ONLY when it is server-confirmed (see
+/// [watchMemberAccess]): the server confirmed the member doc earlier in
+/// this session and later says it is gone / denies access.
+///
+/// - The active company's member watch reports a confirmed removal.
+/// - Or the active company drops out of the membership index (the owner's
+///   removeMember batch deletes it together with the member doc) AND the
+///   company was server-confirmed this session AND a fresh server read of
+///   the member doc says not-exists / permission-denied. An offline or
+///   failed check is "unknown" and does nothing.
+///
+/// On a confirmed removal the guard only: hides the company for this
+/// session ([RemovedCompanies]), shows [lostAccessMessage] once, switches
+/// `user_settings.activeCompanyId` to the next membership (or null, which
+/// routes to onboarding) and schedules a Firestore cache clear. It NEVER
+/// deletes `users/{uid}/memberships/*`: the owner's removeMember batch is
+/// the only thing that deletes another user's membership doc.
 @Riverpod(keepAlive: true)
 class CompanyAccessGuard extends _$CompanyAccessGuard {
   final Map<String, String> _names = <String, String>{};
-  final Set<String> _handled = <String>{};
 
   @override
   void build() {
@@ -227,11 +270,11 @@ class CompanyAccessGuard extends _$CompanyAccessGuard {
         AsyncValue<MemberWatch?> next,
       ) {
         final w = next.value;
-        if (w == null || w.member != null) return;
+        if (w == null || !w.removed) return;
         if (w.cid != ref.read(activeCompanyIdProvider).value) return;
         // Side effects run after this provider frame (they rebuild
         // memberships, which is mid-rebuild right now).
-        scheduleMicrotask(() => _onMemberGone(w.cid));
+        scheduleMicrotask(() => unawaited(_onConfirmedRemoval(w.cid)));
       })
       ..listen<AsyncValue<String?>>(activeCompanyIdProvider, (
         AsyncValue<String?>? prev,
@@ -240,16 +283,15 @@ class CompanyAccessGuard extends _$CompanyAccessGuard {
         final before = prev?.value;
         if (before == null || !next.hasValue || next.value == before) return;
         if (ref.read(currentUidProvider) == null) return; // signed out
+        if (ref.read(removedCompaniesProvider).contains(before)) return;
         final raw = ref.read(membershipsStreamProvider).value;
-        if (raw == null) return;
-        final removed = ref.read(removedCompaniesProvider);
-        final stillMember =
-            raw.any((Membership m) => m.id == before) &&
-            !removed.contains(before);
-        if (!stillMember) {
-          final after = next.value;
-          scheduleMicrotask(() => unawaited(_onLostAccess(before, after)));
+        if (raw == null || raw.any((Membership m) => m.id == before)) {
+          return; // a normal switch
         }
+        if (!ref.read(serverConfirmedMembersProvider).contains(before)) {
+          return; // never confirmed this session: not evidence of removal
+        }
+        scheduleMicrotask(() => unawaited(_verifyDroppedCompany(before)));
       });
   }
 
@@ -259,33 +301,38 @@ class CompanyAccessGuard extends _$CompanyAccessGuard {
     }
   }
 
-  void _onMemberGone(String cid) {
+  Future<void> _verifyDroppedCompany(String cid) async {
     final uid = ref.read(currentUidProvider);
     if (uid == null) return;
-    ref.read(removedCompaniesProvider.notifier).add(cid);
-    unawaited(
-      ref.read(companyRepositoryProvider).deleteOwnMembership(uid, cid),
-    );
+    final check = await ref
+        .read(companyRepositoryProvider)
+        .fetchMemberDocFromServer(cid, uid);
+    final gone = switch (check) {
+      MemberDocDenied() => true,
+      MemberDocSnapshot(member: null, serverConfirmed: true) => true,
+      _ => false, // still a member, or unknown (offline)
+    };
+    if (gone) await _onConfirmedRemoval(cid);
   }
 
-  Future<void> _onLostAccess(String cid, String? nextCid) async {
-    if (!_handled.add(cid)) return;
+  Future<void> _onConfirmedRemoval(String cid) async {
     final uid = ref.read(currentUidProvider);
     if (uid == null) return;
+    if (ref.read(removedCompaniesProvider).contains(cid)) return; // once
     ref.read(removedCompaniesProvider.notifier).add(cid);
+    ref.read(serverConfirmedMembersProvider).remove(cid);
     ref
         .read(companyNoticeProvider.notifier)
         .show(lostAccessMessage(_names[cid] ?? 'this company'));
+    // The removed company is hidden now, so this resolves to the next one.
+    final nextCid = ref.read(activeCompanyIdProvider).value;
     try {
       await ref
           .read(userSettingsRepositoryProvider)
-          .setActiveCompanyId(uid, nextCid);
+          .setActiveCompanyId(uid, nextCid == cid ? null : nextCid);
     } on Object catch (e) {
       developer.log('Switch after removal failed', name: 'company', error: e);
     }
-    unawaited(
-      ref.read(companyRepositoryProvider).deleteOwnMembership(uid, cid),
-    );
     try {
       await ref.read(cacheResetFlagProvider).schedule();
     } on Object catch (e) {
@@ -312,7 +359,15 @@ class CompanyActions {
     return uid;
   }
 
+  Future<String>? _registering;
+
   /// Registers a company (one WriteBatch) and waits until it is active.
+  ///
+  /// A call made while another register is in flight returns that same
+  /// future (never a second company). The member-doc listener for the new
+  /// company is held back ([PendingRegistrations]) until the server acks
+  /// the batch, or until the offline grace period ends; in the latter case
+  /// the app runs on the locally written docs.
   Future<String> registerCompany({
     required String name,
     String? city,
@@ -320,16 +375,49 @@ class CompanyActions {
     required String ownerDisplayName,
     String? ownerPhone,
   }) async {
-    final cid = await _ref
-        .read(companyRepositoryProvider)
-        .registerCompany(
-          uid: _uid,
-          name: name,
-          city: city,
-          phoneE164: phone,
-          ownerDisplayName: ownerDisplayName,
-          ownerPhoneE164: ownerPhone,
-        );
+    final inFlight = _registering;
+    if (inFlight != null) return inFlight;
+    final future = _register(
+      name: name,
+      city: city,
+      phone: phone,
+      ownerDisplayName: ownerDisplayName,
+      ownerPhone: ownerPhone,
+    );
+    _registering = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_registering, future)) _registering = null;
+    }
+  }
+
+  Future<String> _register({
+    required String name,
+    String? city,
+    String? phone,
+    required String ownerDisplayName,
+    String? ownerPhone,
+  }) async {
+    final uid = _uid;
+    final cid = const Uuid().v4();
+    final pending = _ref.read(pendingRegistrationsProvider.notifier)..add(cid);
+    try {
+      await _ref
+          .read(companyRepositoryProvider)
+          .registerCompany(
+            uid: uid,
+            name: name,
+            city: city,
+            phoneE164: phone,
+            ownerDisplayName: ownerDisplayName,
+            ownerPhoneE164: ownerPhone,
+            companyId: cid,
+          );
+    } finally {
+      // Ack or offline timeout: attach the member-doc listener now.
+      pending.remove(cid);
+    }
     await _awaitActive(cid);
     return cid;
   }

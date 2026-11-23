@@ -74,6 +74,12 @@ abstract class Contract with _$Contract {
     @Default(Money.zero)
     Money totalPaid,
 
+    /// Running total of early-closure waivers (cache; not cash).
+    @MoneyPaiseConverter()
+    @JsonKey(name: 'totalWaivedPaise')
+    @Default(Money.zero)
+    Money totalWaived,
+
     // Lifecycle dates.
     @NullableCivilDateConverter() CivilDate? lastPaymentOn,
     DateTime? closedAt,

@@ -100,6 +100,11 @@ abstract final class AppInsets {
     bottom: AppSpacing.sm,
   );
   static const EdgeInsets emptyState = EdgeInsets.all(AppSpacing.xl);
+
+  /// Vertical padding of a plain list line (ledger rows, receipts).
+  static const EdgeInsets listRow = EdgeInsets.symmetric(
+    vertical: AppSpacing.sm,
+  );
 }
 
 /// Fixed component dimensions.
@@ -147,6 +152,22 @@ abstract final class AppSizes {
   /// Avatars: account chip / switcher rows (sm), company tile (md).
   static const double avatarSm = 32;
   static const double avatarMd = 40;
+
+  /// Borrower profile header avatar.
+  static const double avatarLg = 56;
+
+  /// Contract card "cleared %" bar.
+  static const double clearedBarHeight = 8;
+
+  /// Long single-column forms (create contract): content max width.
+  static const double formMaxWidth = 720;
+
+  /// Contract timeline: overdue left rail width.
+  static const double timelineRail = 4;
+
+  /// Dashed border of auto-extension rows: dash and gap length.
+  static const double dashLength = 6;
+  static const double dashGap = 4;
 }
 
 /// Corner radii.

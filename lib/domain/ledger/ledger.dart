@@ -2,9 +2,12 @@
 /// portfolio maths.
 library;
 
+export 'borrower_summary.dart';
 export 'contract_projection.dart';
 export 'portfolio_metrics.dart';
 export 'rollover_calculator.dart';
+export 'row_settlement.dart';
 export 'schedule_generator.dart';
+export 'tx_order.dart';
 export 'upfront.dart';
 export 'validators.dart';

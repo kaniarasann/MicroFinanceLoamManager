@@ -36,6 +36,10 @@ class _RegisterCompanyScreenState extends ConsumerState<RegisterCompanyScreen> {
   bool _busy = false;
   String? _error;
 
+  /// The company this form already created. Re-submitting never creates a
+  /// second one; it just continues to home.
+  String? _createdCid;
+
   @override
   void dispose() {
     _name.dispose();
@@ -47,12 +51,21 @@ class _RegisterCompanyScreenState extends ConsumerState<RegisterCompanyScreen> {
   }
 
   Future<void> _submit() async {
-    if (_busy) return;
-    setState(() => _error = null);
-    if (!(_form.currentState?.validate() ?? false)) return;
-    setState(() => _busy = true);
+    if (_busy) return; // a register is already in flight (double tap)
+    if (_createdCid != null) {
+      context.go(AppRoutes.home);
+      return;
+    }
+    setState(() {
+      _error = null;
+      _busy = true; // before any await, so a second tap is a no-op
+    });
+    if (!(_form.currentState?.validate() ?? false)) {
+      setState(() => _busy = false);
+      return;
+    }
     try {
-      await ref
+      _createdCid = await ref
           .read(companyActionsProvider)
           .registerCompany(
             name: _name.text,

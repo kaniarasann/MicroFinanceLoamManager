@@ -13,44 +13,55 @@ import '../company_switcher_test.dart' show pumpLocked, unlock;
 import '../members_screen_test.dart' show pumpMembers;
 
 void main() {
-  testWidgets('collector: no invite card, no send buttons, no revoke, no kebab',
-      (WidgetTester tester) async {
-    await pumpMembers(tester, width: 400, role: 'collector');
-    expect(find.byType(InviteFormCard), findsNothing);
-    expect(find.byKey(const ValueKey<String>('invite_send_whatsapp')), findsNothing);
-    expect(find.byKey(const ValueKey<String>('invite_name')), findsNothing);
-    expect(find.byKey(const ValueKey<String>('invite_revoke_PEND22')), findsNothing);
-    expect(find.textContaining('PEND22'), findsNothing);
-    expect(find.byIcon(Icons.more_vert), findsNothing);
-  });
+  testWidgets(
+    'collector: no invite card, no send buttons, no revoke, no kebab',
+    (WidgetTester tester) async {
+      await pumpMembers(tester, width: 400, role: 'collector');
+      expect(find.byType(InviteFormCard), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('invite_send_whatsapp')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey<String>('invite_name')), findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('invite_revoke_PEND22')),
+        findsNothing,
+      );
+      expect(find.textContaining('PEND22'), findsNothing);
+      expect(find.byIcon(Icons.more_vert), findsNothing);
+    },
+  );
 
-  testWidgets('last owner: Remove disabled, but Remove on a collector enabled',
-      (WidgetTester tester) async {
-    await pumpMembers(tester, width: 1200);
-    final mine = find.byKey(ValueKey<String>('member_menu_${kAsha.uid}'));
-    await tester.ensureVisible(mine);
-    await tester.tap(mine);
-    await tester.pumpAndSettle();
-    final remove = tester.widget<PopupMenuItem<Object?>>(
-      find.byKey(const ValueKey<String>('menu_remove')),
-    );
-    expect(remove.enabled, isFalse);
-    expect(find.text(LastOwnerGuard.message), findsWidgets);
-    await tester.tapAt(const Offset(5, 5));
-    await tester.pumpAndSettle();
+  testWidgets(
+    'last owner: Remove disabled, but Remove on a collector enabled',
+    (WidgetTester tester) async {
+      await pumpMembers(tester, width: 1200);
+      final mine = find.byKey(ValueKey<String>('member_menu_${kAsha.uid}'));
+      await tester.ensureVisible(mine);
+      await tester.tap(mine);
+      await tester.pumpAndSettle();
+      final remove = tester.widget<PopupMenuItem<Object?>>(
+        find.byKey(const ValueKey<String>('menu_remove')),
+      );
+      expect(remove.enabled, isFalse);
+      expect(find.text(LastOwnerGuard.message), findsWidgets);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
 
-    final meena = find.byKey(const ValueKey<String>('member_menu_uid-meena'));
-    await tester.ensureVisible(meena);
-    await tester.tap(meena);
-    await tester.pumpAndSettle();
-    final removeMeena = tester.widget<PopupMenuItem<Object?>>(
-      find.byKey(const ValueKey<String>('menu_remove')),
-    );
-    expect(removeMeena.enabled, isTrue);
-  });
+      final meena = find.byKey(const ValueKey<String>('member_menu_uid-meena'));
+      await tester.ensureVisible(meena);
+      await tester.tap(meena);
+      await tester.pumpAndSettle();
+      final removeMeena = tester.widget<PopupMenuItem<Object?>>(
+        find.byKey(const ValueKey<String>('menu_remove')),
+      );
+      expect(removeMeena.enabled, isTrue);
+    },
+  );
 
-  testWidgets('last owner: repository also rejects remove / demote',
-      (WidgetTester tester) async {
+  testWidgets('last owner: repository also rejects remove / demote', (
+    WidgetTester tester,
+  ) async {
     final (h, _) = await pumpMembers(tester, width: 400);
     final repo = MembersRepository(firestore: h.db);
     await tester.runAsync(() async {
@@ -68,33 +79,41 @@ void main() {
     });
   });
 
-  testWidgets('switcher lists both companies, each row with its own role pill',
-      (WidgetTester tester) async {
-    final h = await pumpLocked(tester, 400);
-    await unlock(tester);
-    await tester.tap(find.byKey(const ValueKey<String>('company_header')));
-    await tester.pumpAndSettle();
-    final rowA = find.byKey(const ValueKey<String>('switcher_company_a'));
-    final rowB = find.byKey(const ValueKey<String>('switcher_company_b'));
-    expect(rowA, findsOneWidget);
-    expect(rowB, findsOneWidget);
-    expect(find.descendant(of: rowA, matching: find.text('A Co')), findsOneWidget);
-    expect(find.descendant(of: rowB, matching: find.text('B Co')), findsOneWidget);
-    final pillA = tester.widget<RolePill>(
-      find.descendant(of: rowA, matching: find.byType(RolePill)),
-    );
-    final pillB = tester.widget<RolePill>(
-      find.descendant(of: rowB, matching: find.byType(RolePill)),
-    );
-    expect(pillA.role, Role.owner);
-    expect(pillB.role, Role.collector);
-    expect(find.byType(CompanySwitcherSheet), findsOneWidget);
+  testWidgets(
+    'switcher lists both companies, each row with its own role pill',
+    (WidgetTester tester) async {
+      final h = await pumpLocked(tester, 400);
+      await unlock(tester);
+      await tester.tap(find.byKey(const ValueKey<String>('company_header')));
+      await tester.pumpAndSettle();
+      final rowA = find.byKey(const ValueKey<String>('switcher_company_a'));
+      final rowB = find.byKey(const ValueKey<String>('switcher_company_b'));
+      expect(rowA, findsOneWidget);
+      expect(rowB, findsOneWidget);
+      expect(
+        find.descendant(of: rowA, matching: find.text('A Co')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: rowB, matching: find.text('B Co')),
+        findsOneWidget,
+      );
+      final pillA = tester.widget<RolePill>(
+        find.descendant(of: rowA, matching: find.byType(RolePill)),
+      );
+      final pillB = tester.widget<RolePill>(
+        find.descendant(of: rowB, matching: find.byType(RolePill)),
+      );
+      expect(pillA.role, Role.owner);
+      expect(pillB.role, Role.collector);
+      expect(find.byType(CompanySwitcherSheet), findsOneWidget);
 
-    await tester.tap(rowB);
-    await tester.pumpAndSettle();
-    await tester.runAsync(() async {
-      final s = await h.db.doc(FirestorePaths.userSettings(kAsha.uid)).get();
-      expect(s.data()!['activeCompanyId'], 'b');
-    });
-  });
+      await tester.tap(rowB);
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        final s = await h.db.doc(FirestorePaths.userSettings(kAsha.uid)).get();
+        expect(s.data()!['activeCompanyId'], 'b');
+      });
+    },
+  );
 }

@@ -20,7 +20,10 @@ void main() {
     );
 
     test('message text has company, role, code, play + deep link', () {
-      expect(msg, startsWith('Join *Raju & Sons Finance* on Nordic Ledger as Collector.'));
+      expect(
+        msg,
+        startsWith('Join *Raju & Sons Finance* on Nordic Ledger as Collector.'),
+      );
       expect(msg, contains('Invite code: K7Q2MD'));
       expect(msg, contains('referrer=code%3DK7Q2MD'));
       expect(msg, contains('nordicledger://app/join?code=K7Q2MD'));
@@ -80,7 +83,15 @@ void main() {
     });
 
     test('isValid rejects ambiguous / short / lowercase codes', () {
-      for (final c in <String>['K7Q2M0', 'K7Q2MO', 'K7Q2M1', 'K7Q2MI', 'K7Q2ML', 'K7Q2M', 'k7q2md']) {
+      for (final c in <String>[
+        'K7Q2M0',
+        'K7Q2MO',
+        'K7Q2M1',
+        'K7Q2MI',
+        'K7Q2ML',
+        'K7Q2M',
+        'k7q2md',
+      ]) {
         expect(InviteCode.isValid(c), isFalse, reason: c);
       }
     });
@@ -101,14 +112,26 @@ void main() {
     });
 
     test('phone with spaces / +91 / 91 / 0 prefix normalises', () {
-      for (final p in <String>['98450 12890', '+91 98450 12890', '+919845012890', '919845012890', '09845012890', '98450-12890']) {
+      for (final p in <String>[
+        '98450 12890',
+        '+91 98450 12890',
+        '+919845012890',
+        '919845012890',
+        '09845012890',
+        '98450-12890',
+      ]) {
         expect(IndianPhone.toE164(p), '+919845012890', reason: p);
         expect(PhoneField.validate(p, required: true), isNull, reason: p);
       }
     });
 
     test('invalid phones rejected', () {
-      for (final p in <String>['12345 67890', '98450 1289', '+1 98450 12890', '984501289012']) {
+      for (final p in <String>[
+        '12345 67890',
+        '98450 1289',
+        '+1 98450 12890',
+        '984501289012',
+      ]) {
         expect(PhoneField.validate(p, required: true), isNotNull, reason: p);
       }
       expect(PhoneField.validate('', required: true), isNotNull);

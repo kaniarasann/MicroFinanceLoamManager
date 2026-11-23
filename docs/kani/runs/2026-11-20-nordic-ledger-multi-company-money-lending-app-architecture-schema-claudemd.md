@@ -138,6 +138,18 @@ Build "Nordic Ledger", a Flutter mobile app that lets small lending businesses (
 - [ ] While offline, the app shows a clear "Offline: changes will sync" indicator and a pending-sync count. Queued writes survive an app restart.
 - [ ] When the outstanding balance reaches ₹0, the contract automatically becomes `closed`.
 
+*Full settlement & early-closure discount (added 2026-11-23, user request)*
+- [ ] The Record Payment sheet has a 4th quick chip, **"Close loan ₹X"**, that fills the exact outstanding. When the amount equals the outstanding, the confirm button reads **"Confirm & close loan"**.
+- [ ] **Early-closure discount (owner only).** When closing a loan, the owner may settle for less than the outstanding by entering a **waiver**: "Waive ₹W · reason (required)". The cash received C plus the waiver W must equal the outstanding exactly. The app records both in one atomic batch:
+  - a `payment` transaction of C (if C > 0);
+  - a `waiver` transaction of W.
+  
+  The contract then closes.
+  - Example: outstanding ₹64,000, borrower pays ₹62,000 → waive ₹2,000 → contract closed.
+- [ ] **Waivers are not cash.** They reduce the outstanding and settle installments like a payment, but they are **excluded** from Total Collected, the collections chart, received-today and receipts. The contract header and the borrower ledger show "Waived ₹W" with the reason. Dashboard metrics may later show "Waived" separately.
+- [ ] A waiver is only allowed as part of closing (C + W == outstanding), never as a standalone partial write-off. It is owner only (enforced in rules), immutable, and can be undone only by an owner reversal, which reopens the loan like a payment reversal.
+- [ ] A collector cannot see the waiver option, and the rules deny a collector writing a `waiver`.
+
 *Overdue & reschedule*
 - [ ] An installment that is unpaid (or partly paid) with a due date before today shows as Missed/Overdue with days overdue (today − dueDate). This is derived at read time, with no scheduler needed.
 - [ ] The Overdue Tracker lists all overdue installments of the active company with total overdue ₹, loan count, highest delay, and filters Critical (>3 days) and Recent (1–3 days). Each item has Call, WhatsApp and Record (Pay Now).
@@ -560,7 +572,7 @@ Collection: `companies/{cid}/installments/{installmentId}` (company-level, so th
 
 Collection: `companies/{cid}/transactions/{txId}` (**append-only, immutable**)
 - contractId · borrowerId · borrowerName · loanNo · contractActive: bool
-- type: 'disbursement'|'payment'|'rolloverSettlement'|'reversal'|'reschedule'
+- type: 'disbursement'|'payment'|'rolloverSettlement'|'reversal'|'reschedule'|'waiver' (waiver added 2026-11-23: owner only, amount > 0, note required; counts toward the paid pool P for allocation and closing, but is NOT cash: it is excluded from collected/chart/receipts. Contract gets `totalWaivedPaise: increment(W)` alongside it. A reversal of a waiver decrements `totalWaivedPaise` and reopens the loan)
 - amountPaise: int (≥ 0; 0 only for reschedule audit) · paidOn: string
 - mode: 'upi'|'cash'|'bank'? · reference: string? · note: string?
 - reversesTxId: string? · relatedContractId: string? (rollover counterpart) · rescheduleInfo: map?
@@ -656,9 +668,9 @@ invites/{code}: get if signedIn; list if signedIn && owner(resource.data.company
 | 2 | 4 Domain models · 5 Ledger engine | `kani-orchestrator:role-ui-team` | 1 | passed | Schedule generation, FIFO projection, overdue/partial status, auto-extension, reschedule, rollover maths and portfolio metrics are verifiable through the unit-test suite (pure Dart, no device needed). |
 | 3 | 6 Firestore rules + indexes + rules tests · 7 Auth & lock | `kani-orchestrator:role-database-admin`, `kani-orchestrator:role-ui-team` | 1, 2 | passed | Rules tests pass on the emulator for every collection × role. On a device a user can sign in with Google, set an MPIN, unlock with MPIN or fingerprint, hit the 5-try lockout, and auto-lock. |
 | 4 | 8 Companies & onboarding · 9 Members & invites | `kani-orchestrator:role-ui-team` | 3 | passed | A new user registers a company and becomes owner. The owner invites a collector via WhatsApp/SMS. The collector joins with the code, sees only that company, and switches companies. Revoke, role change and the last-owner guard work. |
-| 5 | 10 Borrowers · 11 Contracts (create, detail timeline, reschedule) | `kani-orchestrator:role-ui-team` | 4 | pending | An owner adds borrowers and creates contracts, including offline, with a correct net-disbursed figure and an auto-generated schedule. The owner views the timeline and reschedules an installment. Data syncs to the second device. |
-| 6 | 12 Payments, reversal & rollover | `kani-orchestrator:role-ui-team` | 5 | pending | Full, partial and advance payments update the schedule. A partial or missed installment shows as overdue and auto-extends at the end. A contract closes at ₹0. An owner rolls over a contract with the correct net cash. Excess is flagged after a concurrent offline collection. |
-| 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | pending | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
+| 5 | 10 Borrowers · 11 Contracts (create, detail timeline, reschedule) | `kani-orchestrator:role-ui-team` | 4 | passed | An owner adds borrowers and creates contracts, including offline, with a correct net-disbursed figure and an auto-generated schedule. The owner views the timeline and reschedules an installment. Data syncs to the second device. |
+| 6 | 12 Payments, reversal & rollover · 12b Close-loan chip + early-closure waiver (added 2026-11-23) | `kani-orchestrator:role-ui-team` | 5 | passed | Full, partial and advance payments update the schedule. A partial or missed installment shows as overdue and auto-extends at the end. A contract closes at ₹0, including a one-tap "Close loan" and an owner-only early-closure waiver. An owner rolls over a contract with the correct net cash. Excess is flagged after a concurrent offline collection. |
+| 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | in-progress | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
 | 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7 | pending | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
 | 9 | 17 Release & Play readiness | `kani-orchestrator:role-ui-team` | 8 | pending | A signed release `.aab` builds with the launcher icon and splash, Google sign-in works in the release build, and the Play publishing checklist is ready for internal-testing upload. |
 
@@ -1313,6 +1325,506 @@ New test files: `test/features/company/tester/s4_message_and_code_test.dart` (10
 
 ### Sprint 5
 **Sprint Goal:** An owner adds borrowers and creates contracts, including offline, with a correct net-disbursed figure and an auto-generated schedule. The owner views the timeline and reschedules an installment. Data syncs to the second device.
+
+**kani-orchestrator:role-ui-team — Task 10 Borrowers:**
+
+Files created/modified:
+- `lib/features/borrowers/data/borrower_repository.dart`: `watchBorrowers` (archived == false, orderBy nameLower), `watchBorrower`, `createBorrower` (uuid v4, nameLower, E.164, client timestamps, one doc write), `updateBorrower`, `archiveBorrower`. Also `WriteOutcome` {synced, queued} and `awaitServerAck`, which uses a 2 s ack grace.
+- `lib/features/borrowers/data/contact_launcher.dart`: `tel:` dialer and `wa.me` with a browser fallback. Injectable for tests.
+- `lib/features/contracts/data/ledger_snapshot_repository.dart`: the shared read side. It holds the active contracts, installments and transactions listeners, plus on-demand queries: borrower history contracts and transactions, and per-contract contract, installments and transactions.
+- `lib/features/contracts/application/ledger_providers.dart`: the three live stream providers, `ProjectionMemo`, `projectionMemoProvider`, `activeProjectionsProvider` and `projectionsByBorrowerProvider`.
+- `lib/features/contracts/application/loan_label.dart`: "Loan #04", and the frequency and payment-mode labels.
+- `lib/features/contracts/presentation/screens/contract_placeholder_screen.dart`: placeholders for `/contracts/new?borrowerId=`, `/contracts/{id}` and `/contracts/{id}/pay`.
+- `lib/features/borrowers/application/borrower_providers.dart`: `borrowersProvider`, `borrowerProvider(id)`, `BorrowerQueryState`, `borrowerItemsProvider`, `borrowerSearchProvider`, the history providers, `borrowerSummaryProvider(id)`, `BorrowerActions` and `contactLauncherProvider`.
+- `lib/features/borrowers/application/reminder_message.dart`: the polite WhatsApp reminder text, naming the earliest open installment.
+- `lib/domain/ledger/borrower_summary.dart` (exported from `ledger.dart`): pure `Standing`, `contractStanding`, `dueWithinWeek`, `borrowerListStats`, `LedgerEntry` (balance after) and `summarizeBorrower`.
+- `lib/core/time/today_provider.dart`: the `Today` notifier (`todayProvider`, `refresh()`, `untilMidnight()`).
+- `lib/core/widgets/day_ticker.dart`: refreshes `todayProvider` at IST midnight and on resume. It wraps the home shell.
+- `lib/core/validation/borrower_validators.dart`: name 2–80, duplicate-phone lookup and its message.
+- `lib/features/borrowers/presentation/screens/borrowers_screen.dart`: the Borrowers tab, using `ListDetailLayout` (40/60 split on expanded, push on compact/medium).
+- `lib/features/borrowers/presentation/screens/borrower_profile_screen.dart`: the `/borrowers/{id}` page.
+- `lib/features/borrowers/presentation/widgets/`:
+  - `borrower_list_pane.dart`: search, filter chips, owner-only "Add borrower", and the empty states.
+  - `borrower_row.dart`: a list row, with the selected state shown as a navy 1px border on the pressed tint.
+  - `standing_pill.dart`: the status pill.
+  - `borrower_profile_view.dart`: the header, tiles, Call/WhatsApp/New loan, the Active/Ledger/Closed toggle and Recent receipts. Owners also get Edit and Archive.
+  - `active_contract_card.dart`, `closed_contract_card.dart` and `ledger_entry_tile.dart`.
+  - `borrower_form.dart`: an adaptive sheet with the "Saved · will sync" copy.
+- `lib/core/routing/app_router.dart`: `AppRoutes.borrower/newContract/contract/recordPayment` and `inCompanyShell()` prefix matching, plus the routes.
+- `lib/features/dashboard/presentation/screens/home_screen.dart`: the Borrowers destination is wired, with `DayTicker` around the shell.
+- `lib/core/theme/app_theme.dart`: new tokens `AppSizes.avatarLg`, `AppSizes.clearedBarHeight` and `AppInsets.listRow`.
+- `android/app/src/main/AndroidManifest.xml`: a `tel` scheme in `<queries>` for Android 11+.
+- Tests:
+  - `test/domain/ledger/borrower_summary_test.dart` (12);
+  - `test/features/borrowers/borrower_test_support.dart`;
+  - `borrower_repository_test.dart` (9), `borrower_providers_test.dart` (12) and `borrowers_screen_test.dart` (14);
+  - `test/core/routing/onboarding_redirect_test.dart` (+1 test, +1 assertion block);
+  - `firebase/test/sprint5_borrowers.test.js` (14).
+
+Key decisions:
+- **Writes are offline-tolerant.**
+  - A borrower write is one `set`/`update`. It lands in the cache at once and waits at most 2 s for the server ack.
+  - On a timeout the result is `queued`, and the snackbar says "Saved · will sync". Otherwise it says "Borrower added" / "Borrower updated" / "Borrower archived".
+  - Errors from the rules are mapped to `AppFailure` and shown inline.
+- **Client timestamps.** `createdAt`/`updatedAt` come from the clock (`nowIst().toUtc()`), not `serverTimestamp`. The `Borrower` model needs non-null timestamps, and a pending server timestamp reads back as null from the cache.
+- **Duplicate phone blocks the save.** Uniqueness within the company is checked on the client against the cached non-archived list. It shows a terracotta warning ("This mobile is already saved for {name}.") and disables Save. Rules can't enforce uniqueness, so a concurrent offline duplicate is still possible.
+- **History queries need no new index.**
+  - `contracts` uses `borrowerId == x && status in [closed, rolledOver]`, which is covered by the existing (status, borrowerId) index.
+  - `transactions` uses `borrowerId == x && contractActive == false` (equality-only merge).
+  - Active-contract transactions come from the live listener, so they are not read twice.
+- **Aggregates:**
+  - exposure = Σ projection outstanding;
+  - lifetime lent = Σ sanctioned of all known contracts, excluding cancelled ones;
+  - collected = Σ payment − Σ reversal of payments (the same rule as portfolio metrics);
+  - "Bal ₹X" = sanctioned − running paid pool (payment + settlement − reversal) per contract, floored at 0;
+  - reschedule audit rows are left out of the ledger, which lists newest first.
+- **Status:** Overdue Nd (terracotta) beats Due today (amber), which beats On track (sage), then "No active loan". "Due this week" means an open installment due today through today + 6, not counting overdue rows.
+- **Memoisation.** `ProjectionMemo` compares the contract doc, its installments and its transactions (each sorted by id, compared by value) and `today`. Unchanged inputs return the identical `ContractProjection`. There is one memo per active company. `activeProjectionsProvider` returns `AsyncLoading` while any listener `isLoading`, so a company switch never mixes data from two companies.
+- **Day ticker.** The midnight timer and the resume hook live in a widget (`DayTicker`), not in the provider. Widget tests that never mount the shell then have no pending timers.
+- **Archive** is owner-only. It is refused while the borrower has active loans, and it needs a confirmation.
+- **Copy.** "+ New loan" is shown to owners only. Record ₹X is shown to everyone, since collectors record payments. The Record button sits under "Next ₹X" (full width) so the card survives 1.3× text at 360dp.
+
+Known limitations:
+- `firestore.rules` and `firestore.indexes.json` are **unchanged**, so no redeploy is needed. The new rules tests pass against the deployed rules file.
+- The "Saved · will sync" path, the `tel:` / `wa.me` launches and the Android 11 `<queries>` were not exercised on a device. The queued path is unit-tested through `awaitServerAck`.
+- `/contracts/new`, `/contracts/{id}` and `/contracts/{id}/pay` are placeholders. Task 11 replaces the first two and Sprint 6 the third.
+- The closed tab shows sanctioned, paid and disbursed date. It does not show a closed date, because `closedAt` → IST civil date needs the tz database in UI code (left for Task 11's detail screen).
+- `ProjectionMemo` compares each contract's lists by value on every snapshot. That is O(docs), and fine at the target scale. It has not been benchmarked separately at 1,000 contracts.
+- Stitch HTML for T5 / screen 5 could not be downloaded (auth required). The layout follows the Section 0 inventory and CLAUDE.md tokens.
+
+Verification: `dart run build_runner build` ok; `flutter analyze` no issues; `flutter test` 618/618 (was 570); `cd firebase && npm test` 334/334 (was 320); `flutter build apk --debug` built `build/app/outputs/flutter-apk/app-debug.apk`. Not deployed, not committed.
+
+**kani-orchestrator:role-ui-team — Task 11 Contracts:**
+
+Files created/modified:
+- `lib/features/contracts/data/contract_repository.dart` — `createContract` (validate → one batch: contract + N base installments + disbursement tx + company `nextLoanNo: increment(1)`) and `reschedule` (source `rescheduledOutPaise: increment(x)` + `rescheduledToIds: arrayUnion`, new `rescheduled` installment at maxSeq + 1, 0-amount `reschedule` tx with `rescheduleInfo`). `CreateContractCommand`, `RescheduleCommand`, `LedgerActor`, `LedgerWriteResult`.
+- `lib/core/firebase/write_outcome.dart` — `WriteOutcome` + `awaitServerAck` moved here from the borrower repository (re-exported there, so existing imports still work).
+- `lib/features/contracts/application/contract_draft.dart` — pure `ContractDraft` (live upfront / net / effective bps / cycles / errors / schedule), `defaultFirstDue`, `parsePercentBps`, `formatBpsPercent`.
+- `lib/features/contracts/application/contract_providers.dart` — `contractRepositoryProvider`, per-contract `contractDoc/Installments/Transactions` streams, `contractViewProvider(id)` (projection + docs + row settlements, any status), `TimelineFilter`, `ledgerActorNameProvider`, `ContractActions` (create / reschedule).
+- `lib/features/auth/application/device_id_provider.dart` — per-install uuid in secure storage, stamped as `deviceId`.
+- `lib/domain/ledger/row_settlement.dart` (exported) — `rowSettlements`: cleared date + mode of each paid row (FIFO replay, reversals un-clear). `validators.dart`: `validateReschedule` + `LedgerFields.newDueDate`.
+- `lib/features/contracts/presentation/screens/create_contract_screen.dart` — `/contracts/new?borrowerId=` (owner only).
+- `lib/features/contracts/presentation/screens/contract_detail_screen.dart` — `/contracts/{id}`; two panes (40/60) on expanded.
+- `lib/features/contracts/presentation/widgets/` — `borrower_card.dart`, `borrower_picker_sheet.dart`, `loan_summary_card.dart`, `collection_day_picker.dart`, `date_field.dart`, `schedule_preview.dart`, `contract_header_card.dart`, `ledger_banner.dart`, `installment_row_card.dart`, `dashed_border_card.dart`, `reschedule_sheet.dart`.
+- `lib/core/routing/app_router.dart` — real create/detail routes; the create route redirects collectors to `/home`. `/pay` stays a placeholder.
+- `lib/core/theme/app_theme.dart` — tokens `AppSizes.formMaxWidth`, `timelineRail`, `dashLength`, `dashGap`.
+- `lib/features/borrowers/data/borrower_repository.dart` — uses the moved `write_outcome.dart`.
+- Tests: `test/features/contracts/` (`contract_test_support.dart`, `contract_widget_harness.dart`, `contract_repository_test.dart` 3, `contract_repository_reschedule_test.dart` 2, `contract_draft_test.dart` 6, `create_contract_screen_test.dart` 7, `contract_detail_screen_test.dart` 7, `reschedule_sheet_test.dart` 3); `test/domain/ledger/row_settlement_test.dart` (6); `firebase/test/sprint5_contracts.test.js` (15).
+
+Key decisions:
+- **loanNo** = cached `company.nextLoanNo + 1` (the company is created with 0), and the same batch increments the counter. The create screen watches `activeCompanyProvider` so the cached value is loaded before submit. Two owners offline can still share a number (known case, Section 2).
+- **Stored `firstDueDate`** is the first generated row's date (the anchor-adjusted one), not the raw picker value. Weekday is stored only for weekly and month day only for monthly.
+- **Timestamps:** contract / installment `createdAt` and `updatedAt` are client clock instants (same reason as borrowers). Transaction `recordedAt` is `serverTimestamp()` via the codec, and `clientRecordedAt` / `deviceId` / `recordedByName` are stamped.
+- **Reschedule validation** is in the domain (`validateReschedule`): 0 < x ≤ the row's unpaid remainder (from the projection), date ≥ today. The audit tx `paidOn` is today. Any stored open row can be moved; the sheet is offered on overdue rows, to owners and collectors.
+- **Detail data:** the screen projects from per-contract listeners (`where contractId ==`, single-field, no new index), so closed and rolled-over contracts render too. `activeProjectionsProvider` stays the source for lists and dashboards.
+- **Copy:** following CLAUDE.md (no ALL CAPS), "NET CASH HANDOVER", "OUTFLOW" and the "ACTIVE / CLOSED / ROLLED OVER" pill read "Net cash handover", "Outflow ₹X · N × ₹Y" and "Active / Closed / Rolled over". Extension captions are the projection's `sourceLabel` capitalised ("Missed on 28 Nov (Inst. 5)"). The excess banner asks the owner to review and reverse duplicates.
+- **Filters:** Missed = overdue rows (incl. partial overdue); Upcoming = due today / upcoming / planned (incl. extensions); Paid = paid. Rescheduled-away rows show only under All. "Maturity" sits on the last row that counts as a cycle.
+- **Footer:** "Immediate action · Collect ₹X" uses the overdue shortfall, else what is due today, else shows the next due. Label and button are stacked so 360dp at 1.3× text fits.
+- **Collector guard:** a route-level redirect in `app_router.dart` plus an in-screen guard ("Only owners can create loans." then pop / go home). The rules deny it anyway (replayed).
+
+Known limitations:
+- `firestore.rules` and `firestore.indexes.json` are **unchanged** (no redeploy). The 15 new replay tests pass against the deployed rules file.
+- `/contracts/{id}/pay` is still the placeholder (Sprint 6). "Collect ₹X" and "Record repayment" route there.
+- The date pickers (first collection, reschedule) aren't driven in widget tests. The defaults and the validation behind them are tested.
+- The "Saved · will sync" path wasn't exercised on a device (fake Firestore acks at once). It shares `awaitServerAck` with borrowers.
+- `deviceId` is per installation (secure storage), so a reinstall gets a new id.
+- Notifications aren't rescheduled on create / reschedule yet (the scheduler arrives in a later sprint).
+
+Verification: `dart run build_runner build` ok; `flutter analyze` no issues; `flutter test` 653/653 (was 618); `cd firebase && npm test` 349/349 (was 334); `flutter build apk --debug` built `build/app/outputs/flutter-apk/app-debug.apk`. Not deployed, not committed.
+
+**Module Lead — Sprint 5 Review (attempt 1):**
+Date: 2026-11-22
+
+Checklist:
+- [x] Component alignment with tech design
+- [x] Interface consistency (API contracts match)
+- [x] No hardcoded secrets
+- [x] Input validation present
+- [x] Error handling at integration points
+
+**Findings:**
+- **Re-ran independently:** `flutter analyze` is clean and `flutter test` passes 653/653. The rules suite reported 349/349, including `sprint5_borrowers.test.js` and `sprint5_contracts.test.js`, which replay the exact client batches. Rules and indexes are unchanged, so there is no redeploy. There are no `print` calls in `lib/`.
+- **Create-contract batch matches Section 2 write paths:** the contract (active, totalPaid 0), N base installments, the disbursement transaction (stamped, amount = netDisbursed), and `companies.nextLoanNo: increment(1)`. The reschedule batch matches too: source `rescheduledOutPaise` increment + `rescheduledToIds` arrayUnion, the new `rescheduled` installment, and a ₹0 audit transaction. Both run through `validateContractTerms` / `validateReschedule`.
+- **Accepted:**
+  - duplicate phone blocks Save; checked against the cached list, so an offline duplicate across two devices remains possible;
+  - archive requires no active loans;
+  - "Record" is visible to collectors;
+  - `WriteOutcome` is shared in `core/firebase/write_outcome.dart`;
+  - `deviceIdProvider` uses a per-install uuid in secure storage;
+  - copy is sentence case per CLAUDE.md;
+  - footer CTAs are stacked to survive 1.3× text at 360 dp.
+- **Interfaces for Sprint 6:**
+  - `/contracts/{id}/pay` is a placeholder, linked from Collect, Record repayment and the borrower card's Record.
+  - The payment repository must reuse `WriteOutcome`, `deviceIdProvider` and `ledgerActorNameProvider`, and stamp transactions the same way.
+  - The notification rescheduling hook is pending (Sprint 8).
+
+**Tester — Sprint 5 Results (attempt 1):**
+
+New test files (no production code changed):
+- `test/features/borrowers/tester/s5_borrower_search_aggregates_test.dart` (5)
+- `test/features/contracts/tester/s5_create_contract_test.dart` (8)
+- `test/features/contracts/tester/s5_reschedule_test.dart` (5)
+- `test/features/contracts/tester/s5_timeline_test.dart` (2)
+- `test/features/contracts/tester/s5_collector_guard_test.dart` (3)
+- `firebase/test/tester_s5.test.js` (11, including 3 positive controls, so each denial is shown to come from the rule under test)
+
+| # | Test Case | Type | Expected | Actual | Result |
+|---|-----------|------|----------|--------|--------|
+| 1 | Search "98450", "+91 98450" and " +91-98450 " | happy | All three find Anita (+919845012890), not Ravi | Same borrower found for all three | pass |
+| 2 | Name search "ANITA"; digits "77777" | edge | Case-insensitive match; no match on unrelated digits | As expected | pass |
+| 3 | Duplicate phone: 9845012890 / +91 98450 12890 / 098450-12890 against b1 | failure | Each one detected as b1, with message "This mobile is already saved for Anita Sharma." | As expected | pass |
+| 4 | Duplicate check when editing b1 itself, or for a different number | edge | null (Save not blocked) | null | pass |
+| 5 | Aggregates, 2 active + 1 closed (₹20k with ₹5k paid, ₹10k with ₹2k paid and 31 Oct missed, ₹6k closed) | happy | Exposure ₹23,000; lifetime lent ₹36,000; collected ₹13,000 (disbursement excluded); 2 active, 1 closed; overdue, 7 days | As expected | pass |
+| 6 | Create ₹1,00,000 monthly on the 31st from 31 Jan 2025 at ₹30,000 | happy | Stored due dates 31 Jan, 28 Feb, 31 Mar, 30 Apr; amounts 30k/30k/30k/10k; baseInstallmentCount 4; weekday null | As expected | pass |
+| 7 | Monthly on the 31st from 31 Jan 2024 (leap year) | edge | 2nd row is 2024-02-29 | 2024-02-29 | pass |
+| 8 | 7.5% upfront on ₹1,00,000 | happy | upfront ₹7,500; net ₹92,500 on the contract and on the disbursement tx | As expected | pass |
+| 9 | Flat upfront = sanctioned | failure | ValidationFailure(upfrontInput); no contract/installment/tx written; nextLoanNo stays 3 | As expected | pass |
+| 10 | 100% upfront | failure | Rejected, nothing written | As expected | pass |
+| 11 | Daily ₹1 on ₹367 (367 installments) | failure | ValidationFailure(installmentCount); nothing written | As expected | pass |
+| 12 | Daily ₹1 on ₹366 | edge | Allowed; 366 installments | 366 rows | pass |
+| 13 | Monthly with no preferred day | failure | Rejected | Rejected | pass |
+| 14 | Missed fixture (₹30k weekly ₹10k, ₹4k paid, today 14 Nov) | happy | Inst 1 unpaid ₹6,000; outstanding ₹26,000 | As expected | pass |
+| 15 | Reschedule ₹6,001 of a ₹6,000 unpaid remainder | failure | ValidationFailure; source untouched; no new row | As expected | pass |
+| 16 | Reschedule to yesterday, then to today | failure/edge | Past date rejected; today allowed (4th installment row) | As expected | pass |
+| 17 | After rescheduling missed inst 2 (₹10k) to 25 Nov | happy | Outstanding and totalPaid unchanged; non-extension rows sum to ₹30,000; one fewer extension row; overdue ₹6,000 | As expected | pass |
+| 18 | Partial reschedule of inst 1's ₹6,000 shortfall | edge | Outstanding ₹26,000; overdue ₹10,000 (inst 2 only) | As expected | pass |
+| 19 | Timeline: missed fixture (nothing paid, today 14 Nov) | happy | "Installment 4 · Added" and "Installment 5 · Added" shown; no 6 | As expected | pass |
+| 20 | Timeline when today = first due date | edge | No "· Added" rows | None | pass |
+| 21 | Real app router: collector navigates to /contracts/new?borrowerId=b1 | failure/auth | Redirected to HomeScreen; CreateContractScreen never built | As expected | pass |
+| 22 | Real app router: owner navigates to /contracts/new | happy | CreateContractScreen opens | Opens | pass |
+| 23 | In-screen guard: collector on CreateContractScreen (router without redirect) | failure/auth | Leaves to /home with "Only owners can create loans." | As expected | pass |
+| 24 | Rules: control, owner create batch | happy | Allowed | Allowed | pass |
+| 25 | Rules: collector create batch | auth | Denied | Denied | pass |
+| 26 | Rules: totalPaidPaise = 1 at create | failure | Denied | Denied | pass |
+| 27 | Rules: owner updates an installment's amountDuePaise | failure | Denied | Denied | pass |
+| 28 | Rules: control, reschedule batch with audit amount 0 | happy | Allowed | Allowed | pass |
+| 29 | Rules: reschedule audit tx with amount 5 | failure | Denied | Denied | pass |
+| 30 | Rules: owner deletes a borrower | failure | Denied | Denied | pass |
+| 31 | Rules: collector deletes a borrower | failure | Denied | Denied | pass |
+| 32 | Rules: control, own collector reads an installment | happy | Allowed | Allowed | pass |
+| 33 | Rules: owner/collector of company B reads (get) A's installment | auth | Denied | Denied | pass |
+| 34 | Rules: owner of B lists A's installments by contractId | auth | Denied | Denied | pass |
+
+**Bugs Found:**
+None.
+
+Observations (not bugs):
+- `RescheduleCommand.remaining` is supplied by the caller (the sheet, from the projection). The repository trusts it, and the rules only cap the move at the source's `amountDuePaise`. So a caller passing a stale `remaining` could move an already-paid portion. This is acceptable today because the only caller derives it live.
+- Extension rows ("· Added") repeat the overdue shortfall at the end of the schedule by design. Any sum over `rows` must exclude `isExtension` rows. Sprint 7 dashboard/calendar totals should keep this in mind.
+
+**Needs human verification on a device:**
+- Offline contract and borrower create ("Saved · will sync"), then sync to a second device.
+- The first-collection and reschedule date pickers.
+- `tel:` and `wa.me` launches, including the Android 11+ `<queries>`.
+
+**Verification:** `flutter analyze` no issues; `flutter test` 676/676 (was 653, +23); `cd firebase && npm test` 360/360 (was 349, +11). Not deployed, not committed.
+
+**Sprint Test Summary:** 34 passed, 0 failed.
+
+**kani-orchestrator:role-ui-team — Sprint 5 fix (attempt 2): false member-removal after register:**
+
+Files created/modified:
+- `lib/features/company/application/member_access_monitor.dart` — new. `watchMemberAccess()` applies the conservative removal rule, re-attaches with backoff (1/2/4/8/16/30 s), and defines `MemberWatch` (`member` + `removed`).
+- `lib/features/company/application/company_providers.dart` — new providers `serverConfirmedMembers` (session set), `memberRetryBackoff` and `PendingRegistrations`. `activeMemberWatch` uses the monitor and is held back while a register is pending. `CompanyAccessGuard` rewritten: it acts only on a confirmed removal and never deletes membership docs. When the active company drops from the index it acts only if that company was server-confirmed AND a fresh server read says missing or denied. `CompanyActions.registerCompany` de-duplicates in-flight calls and pre-generates the cid.
+- `lib/features/onboarding/data/company_repository.dart` — `watchMember` replaced by `watchMemberDoc` (raw `MemberDocEvent`s with `serverConfirmed = !isFromCache && !hasPendingWrites`, permission-denied becomes `MemberDocDenied`). Added `fetchMemberDocFromServer` (returns null when unknown). **`deleteOwnMembership` removed.** `registerCompany` takes an optional `companyId`.
+- `lib/features/onboarding/presentation/screens/register_company_screen.dart` — `_busy` is set before validation and before any await, so a double tap is a no-op. After a success, re-submitting goes home and never creates a second company.
+- `test/features/company/member_access_test.dart` — new, 14 tests: the pure rule; the guard with a fake member-doc stream (fake_cloud_firestore asserts the membership docs remain); the router with cache-only/pending memberships staying on /home; register de-dup and listener-after-ack; widget double-tap → 1 call.
+- `test/features/company/company_providers_test.dart` — updated the tests that encoded the old wrong behaviour:
+  - "member doc deleted…" now asserts the membership docs are KEPT;
+  - "membership doc deleted by the owner also switches out" is now "owner removeMember (index + member doc)…";
+  - new: "index gone but server still has member doc: not a removal".
+- `test/features/onboarding/onboarding_repositories_test.dart` — "watchMember emits null…" was replaced by `watchMemberDoc` metadata and `fetchMemberDocFromServer` tests.
+
+Key decisions:
+- The repository reports facts; the decision about "removed" needs session history, so it lives in the application layer, as a pure, testable stream function.
+- A snapshot carrying pending local writes never counts as server confirmation, even when `isFromCache` is false.
+- On register, the member listener attaches only after the batch ack, or after the 8 s offline grace. Until then the role comes from the membership index. Pending local docs already count as memberships, so the router stays on /home.
+- On a confirmed removal the app may only do three things: hide the company for the session, show the one-time message, and set the clear-cache flag. The owner's removeMember batch is the only client path that deletes a membership doc. Rules are unchanged.
+
+Known limitations:
+- Because the client no longer deletes its own membership doc, removal can go unconfirmed in one case. If a user was removed while the app was closed, the stale `users/{uid}/memberships/{cid}` doc is only deleted when the owner's removeMember batch did it. If it was not deleted, the server never confirms membership in the new session. The company then stays listed, with denied reads and listener retries capped at 30 s, until the user leaves it (Sprint 8). removeMember deletes both docs, so this only arises from manual or partial data.
+
+**Verification (fix attempt 2):** `dart run build_runner build` OK; `flutter analyze` No issues found; `flutter test` 692/692 (was 676, +16); `cd firebase && npm test` 360/360; `flutter build apk --debug --target-platform android-x64` built `build/app/outputs/flutter-apk/app-debug.apk`. Not deployed, not committed.
+
+**Human verification, attempt 1 (2026-11-22): FAILED.**
+- **Bug:** registering a company showed "You no longer have access…" and bounced back to Register, and each retry created another company.
+- **Root cause:**
+  - the member-doc listener got PERMISSION_DENIED before the server had applied the register batch;
+  - the removed-member handler treated that as a removal;
+  - the handler then **deleted the user's membership docs**.
+- **Data repair (user chose "delete all 3, start fresh"):** the orchestrator deleted the 3 duplicate companies and their member docs via admin tools. `user_settings.activeCompanyId` was already null.
+
+**Human verification, attempt 2 (2026-11-23): PASSED** (Reschedule check deferred).
+- Live data confirms one company "Kani & CO" and the owner membership is intact. `nextLoanNo` = 2 (two loans created).
+- The user verified registration, borrowers, and loan creation with net/effective % and the schedule.
+- **Reschedule:** the button shows only on overdue rows, and new loans can't be backdated. The user created a Daily loan to verify Reschedule on the next day.
+- The user approved Sprint 5, with Reschedule to be confirmed then. If it fails, the fix is folded into Sprint 6.
+- **Open question raised to the user:** should Reschedule also be offered on upcoming rows? Currently it is overdue only, per the requirements.
+- **Emulator note:** storage is ~850 MB free. Use the x64-only debug APK. A full reinstall needed an uninstall, which reset the sign-in.
+
+### Sprint 6
+**Sprint Goal:** Full, partial and advance payments update the schedule. A partial or missed installment shows as overdue and auto-extends at the end. A contract closes at ₹0. An owner rolls over a contract with the correct net cash. Excess is flagged after a concurrent offline collection.
+
+**kani-orchestrator:role-ui-team — Task 12 Payments, reversal & rollover:**
+
+Files created/modified:
+- `lib/features/payments/data/payment_repository.dart` — `ContractSnapshot` (outstanding, reversed ids), `RecordPaymentCommand`, `ReversePaymentCommand`, `PaymentWriteResult` (closed, balanceAfter), `recordPayment` (auto-close and contractActive flips) and `reversePayment` (reopens a closed contract; double reversal blocked).
+- `lib/features/rollover/data/rollover_repository.dart` — `RolloverCommand` (implements `LoanTermsInput`) and `rollover`, using `computeRollover` for the quote and `planNewContract` for the new docs.
+- `lib/core/firebase/chunked_batch.dart` — `ChunkedBatch`: the atomic ops plus spill ops (contractActive flips), at most 450 per batch, all committed at once.
+- `lib/features/contracts/data/contract_repository.dart` — extracted `LoanTermsInput`, `validateCommandTerms`, `NewContractPlan` / `planNewContract` and `optionalText`; `createContract` uses them, with an unchanged batch shape.
+- `lib/features/contracts/application/contract_providers.dart` — shared `requireActiveCid` and `readLedgerActor` (ContractActions uses them).
+- `lib/features/payments/application/payment_providers.dart` — `paymentRepositoryProvider`, `ContractView.snapshot`, `QuickAmounts`, `validateRecordAmount`, `receiptMessage` and `PaymentActions` (record / reverse).
+- `lib/features/rollover/application/rollover_providers.dart` — `rolloverRepositoryProvider` and `RolloverActions`.
+- `lib/features/contracts/presentation/widgets/loan_terms_controller.dart`, `loan_amount_fields.dart` and `loan_schedule_fields.dart` — the create-contract term inputs, extracted with the same keys and shared by create and rollover. `create_contract_screen.dart` now uses them.
+- `lib/features/payments/presentation/screens/record_payment_sheet.dart` — `RecordPaymentSheet` and `recordPaymentPage` for `/contracts/{id}/pay`.
+- `lib/features/payments/presentation/widgets/` — `payment_mode_selector.dart`, `receipt_share_panel.dart`, `payment_ledger_list.dart` and `reverse_payment_dialog.dart`.
+- `lib/features/rollover/presentation/screens/rollover_screen.dart` — `/contracts/{id}/rollover`.
+- `lib/features/rollover/presentation/widgets/` — `closing_contract_card.dart`, `rollover_settlement_card.dart` and `rollover_link_banner.dart`.
+- `lib/core/widgets/adaptive_sheet.dart` — `AdaptiveSheetPage`, a router page that opens as a bottom sheet on compact windows and a 560 dialog on wider ones.
+- `lib/core/widgets/currency_field.dart` — `large` option (currencyDisplay digits).
+- `lib/core/routing/app_router.dart` — the real `/pay` page and the `/rollover` route, which redirects collectors back to the contract. `AppRoutes.rollover(id)` added.
+- `lib/features/contracts/presentation/screens/contract_detail_screen.dart` — the Ledger list with owner Reverse, the rollover link banners, and the excess copy "Excess collected ₹X. Review and reverse the duplicate payment."
+- Tests:
+  - `test/features/payments/`: `payment_test_support.dart`, `payment_widget_harness.dart`, `payment_repository_test.dart` (6), `payment_reversal_test.dart` (5), `payment_projection_test.dart` (3), `payment_helpers_test.dart` (6), `record_payment_sheet_test.dart` (8), `contract_ledger_test.dart` (5).
+  - `test/features/rollover/`: `rollover_repository_test.dart` (5), `rollover_screen_test.dart` (5).
+  - `test/features/contracts/contract_detail_screen_test.dart`: the ₹93,000 assertion is scoped to the header card, because the disbursement now also shows in the ledger.
+  - `firebase/test/sprint6_payments.test.js` (13).
+
+Key decisions:
+- **The repository validates against the device's snapshot.** Commands carry `ContractSnapshot` (contract, installments, transactions from the per-contract listeners) rather than a bare contractId:
+  - outstanding = sanctioned − paid pool (payments + settlements − reversals);
+  - the docs to flip come from the same snapshot;
+  - "already reversed" is checked there.
+  
+  No server read is needed, so all of it works offline.
+- **Auto-close:**
+  - only an `active` contract closes;
+  - the new payment is written with `contractActive: false` when it closes the loan, and with false on any non-active contract;
+  - the money ops (tx + contract update) are always in the first batch;
+  - flips spill past 450 ops: a 366-installment close is 2 + 467 ops, so 2 batches.
+- **Late payment on `rolledOver`:** accepted without the outstanding cap (excess path), status unchanged, tx `contractActive: false`. The sheet shows "This loan was rolled over…" and "After this: excess of ₹X to review". Closed or cancelled contracts refuse payments.
+- **Reversal:**
+  - owner only (UI plus rules);
+  - a reason is required (stored in `note`); amount = original; `paidOn` = today; mode copied;
+  - reopens only a `closed` contract that has a balance again. Reversing a duplicate on a closed contract that is still settled keeps it closed;
+  - rolled-over contracts never reopen.
+- **Rollover with ₹0 net cash:** no disbursement transaction is written. The rules would allow a 0 disbursement (`nonNeg`), but no cash moves; `netDisbursedPaise: 0` records it. Both variants are replayed against the rules.
+- **Rollover dates:** the settlement tx and the new contract's `disbursedOn` are today (IST). The form prefills the old sanctioned, installment, frequency and collection day; the upfront starts empty.
+- **Quick amounts:**
+  - Full due = the next open row's remainder;
+  - Advance = the remainders of the next two open non-extension rows, capped at outstanding (extension rows re-plan overdue money, so they are not double-counted);
+  - the amount is prefilled with Full due.
+  
+  The date picker allows today back to today − 30, never the future. Mode defaults to UPI.
+- **Receipt:** sent from the user's phone through the existing `InviteShareService` (`wa.me` / `sms:`), with the exact text "Received ₹X from {borrower} for Loan #N on {d MMM yyyy} via {mode}. Balance: ₹Y. — {Company}".
+- **Navigation:** Rollover from the sheet pops the sheet first and then pushes `/rollover`. Replacing a popup page in place left the sheet in the overlay. A successful rollover `pushReplacement`s to the new contract.
+
+Known limitations:
+- `firestore.rules` and `firestore.indexes.json` are **unchanged** (no redeploy). The 13 new replay tests pass against the current rules.
+- Two devices that both close the same loan offline both flip the docs. That is harmless: the excess shows on the closed contract. A closed contract drops out of the active listeners, so its excess is seen from the contract or borrower history, not the dashboard.
+- If follow-up flip batches fail independently (very large contracts only), some old docs keep `contractActive: true`. The projections ignore them, because the contract is not active, but they stay in the active listeners until rewritten.
+- The date picker and the WhatsApp / SMS hand-off were not exercised on a device. The launcher URIs are unit-tested.
+- Notification rescheduling after a payment or rollover is pending (Sprint 8).
+
+Verification: `dart run build_runner build` ok; `flutter analyze` No issues found; `flutter test` 735/735 (was 692, +43); `cd firebase && npm test` 373/373 (was 360, +13); `flutter build apk --debug --target-platform android-x64` built `build/app/outputs/flutter-apk/app-debug.apk`. Not deployed, not committed.
+
+**Module Lead — Sprint 6 Review (attempt 1):**
+Date: 2026-11-23
+
+Checklist:
+- [x] Component alignment with tech design
+- [x] Interface consistency (API contracts match)
+- [x] No hardcoded secrets
+- [x] Input validation present
+- [x] Error handling at integration points
+
+**Findings:**
+- **Re-ran independently:** `flutter analyze` is clean and `flutter test` passes 735/735. The rules suite reported 373/373, with `sprint6_payments.test.js` replaying the collector payment (+ close), owner reversal, rollover and late payment on a rolledOver contract. Rules and indexes are unchanged, so there is no redeploy.
+- **Write paths match Section 2:**
+  - Payment: one batch with `totalPaidPaise: increment(+amt)`.
+  - Reversal: owner only, `reversesTxId`, `increment(−amt)`, reopens if closed; double reversal is blocked by a check against existing `reversesTxId`s.
+  - Rollover: old → rolledOver with `increment(oldOutstanding)` and a `rolloverSettlement` transaction; the new contract via the shared builder; disbursement = netCash (skipped when 0); `nextLoanNo` increment.
+- **Close/reopen flips** are chunked at 450 ops in follow-up batches. The money fields stay atomic in the first batch, so a partial flip failure can't corrupt balances (projections ignore inactive contracts).
+- **Accepted:**
+  - net-cash-0 rollover writes no disbursement transaction;
+  - payment validation runs against the cached projection (offline-safe);
+  - term widgets are shared between create and rollover;
+  - `AdaptiveSheetPage` renders a sheet on compact and a 560 dialog on wider screens.
+- **Known gap (acceptable for v1, tracked for Sprint 7):** excess on a *closed* contract, e.g. a stale offline payment arriving after closure, shows only on the contract page and in borrower history, not on the dashboard, because closed contracts leave the live snapshot. Sprint 7 could add an "Excess to review" count from a lightweight query, `contracts where status == closed and totalPaidPaise > sanctionedPaise`. That isn't directly expressible in Firestore, so a client check over closed contracts loaded on demand is the likely route. Logged for the Tech Lead.
+
+**Tester — Sprint 6 Results (attempt 1):**
+
+New tests: `test/features/payments/tester/s6_partial_advance_test.dart` (3), `s6_close_reverse_test.dart` (5), `s6_ledger_roles_test.dart` (5), `test/features/rollover/tester/s6_rollover_test.dart` (3), `firebase/test/tester_s6.test.js` (9).
+
+| # | Test Case | Type | Expected | Actual | Result |
+|---|-----------|------|----------|--------|--------|
+| 1 | ₹1,00,000 weekly ₹10,000: pay ₹6,000 on installment 1 | happy | row 1 partial, outstanding ₹94,000 | as expected | pass |
+| 2 | After the due date, then pay ₹4,000 late | edge | extension row ₹4,000 at the end; late ₹4,000 removes it, row 1 paid, no overdue, outstanding ₹90,000 | as expected | pass |
+| 3 | Advance ₹30,000 | happy | rows 1–3 paid, next due #4 (21 Nov), outstanding ₹70,000 | as expected | pass |
+| 4 | Pay exactly the outstanding (₹40,000 of ₹1,00,000 remaining) | happy | closed, closedAt set, contractActive false on every installment and transaction | as expected | pass |
+| 5 | Pay ₹40,001 (above the outstanding) | failure | ValidationFailure, nothing written | as expected | pass |
+| 6 | Pay ₹0 | failure | ValidationFailure | as expected | pass |
+| 7 | Reverse the final (closing) payment | happy | reopens: active, closedAt null, docs contractActive true, outstanding ₹40,000 | as expected | pass |
+| 8 | Reverse the same payment twice | failure | second is rejected ("already been reversed"), totals unchanged | as expected | pass |
+| 9 | Collector on contract detail | auth | no `reverse_*` action anywhere, no Rollover | as expected | pass |
+| 10 | Collector on the pay sheet | auth | no Rollover segment or card | as expected | pass |
+| 11 | Two "offline" payments from devices A and B exceed the balance | edge | "Excess collected ₹6,000. Review and reverse the duplicate payment." | as expected | pass |
+| 12 | Receipt text | happy | contains ₹ amount, borrower, Loan #, date, "Balance: ₹Y", company | as expected | pass |
+| 13 | Receipt text with no company | edge | no dangling "—" | as expected | pass |
+| 14 | Rollover: ₹18,000 outstanding, new ₹1,00,000 flat ₹7,000 | happy | net ₹75,000 disbursement; old rolledOver + rolledOverToContractId; new has rolledOverFromContractId; old docs inactive | as expected | pass |
+| 15 | Rollover with negative net (₹20,000 − ₹7,000 − ₹18,000) | failure | ValidationFailure, nothing written | as expected | pass |
+| 16 | Rollover of a closed loan | failure | ValidationFailure | as expected | pass |
+| 17 | Rules: control collector payment / owner reversal | happy | allowed | allowed | pass |
+| 18 | Rules: collector reversal | auth | denied | denied | pass |
+| 19 | Rules: collector decreasing totalPaidPaise (direct update and negative-amount batch) | auth | denied | denied | pass |
+| 20 | Rules: payment amount 0 (collector and owner) | validation | denied | denied | pass |
+| 21 | Rules: owner reversal without reversesTxId | validation | denied | denied | pass |
+| 22 | Rules: collector sets status rolledOver (direct and inside a payment batch) | auth | denied | denied | pass |
+| 23 | Rules: editing a payment transaction's amount (owner and collector) | auth | denied | denied | pass |
+
+Full runs: `flutter analyze` no issues; `flutter test` 751/751 (was 735, +16); `cd firebase && npm test` 382/382 (was 373, +9).
+
+**Human verification (on device):** the date picker on the pay sheet (today back to −30 days, no future dates); the WhatsApp / SMS receipt hand-off; two real devices collecting offline at the same time and syncing (excess banner after reconnect).
+
+**Bugs Found:** None.
+
+**Sprint Test Summary:** 25 passed, 0 failed.
+
+**kani-orchestrator:role-ui-team — Task 12b Close-loan chip + early-closure waiver:**
+
+Files created/modified:
+- `lib/domain/models/enums.dart` — `TxType.waiver`.
+- `lib/domain/models/contract.dart` (+ regenerated `.freezed` / `.g`) — `Money totalWaived` (JSON `totalWaivedPaise`, `MoneyPaiseConverter`, default 0).
+- `lib/domain/ledger/contract_projection.dart` — `paidPool` adds waivers (P = payment + rolloverSettlement + waiver − reversal); `waivedTotal()`; `ContractProjection.totalWaived`. `excess` / `outstanding` are unchanged (both still derive from P).
+- `lib/domain/ledger/row_settlement.dart` — waivers count when replaying row clearing (a waiver-completed row has a null mode).
+- `lib/domain/ledger/portfolio_metrics.dart` — `_cashDelta` returns 0 for a waiver; a reversal of a known waiver already returns 0 (same path as a rolloverSettlement reversal). Added a `totalWaived` portfolio figure (not displayed).
+- `lib/domain/ledger/borrower_summary.dart` — a waiver adds to the balance pool but not to `collected`; recent receipts stay payments only.
+- `lib/features/payments/data/payment_repository.dart` — `CloseWithWaiverCommand`, `WaiverWriteResult`, `closeWithWaiver` (owner only; cash ≥ 0, W > 0, cash + W == outstanding, reason required, mode required when cash > 0; one batch of payment? + waiver + contract update + chunked flips). `reversePayment` now also reverses a waiver (`totalWaivedPaise: increment(−W)`, `totalPaidPaise` untouched, reopens; the double-reversal block applies).
+- `lib/features/payments/application/payment_providers.dart` — `WaiverSplit`, `PaymentActions.closeWithWaiver` (passes `currentRoleProvider`), and `receiptMessage(waived:)`: "Received ₹C from … via Cash. Loan #N closed (₹W waived). — {Company}" (the "Received" sentence is dropped when C = 0).
+- `lib/features/payments/presentation/screens/record_payment_sheet.dart` — the 4th chip "Close loan ₹X"; "Confirm & close loan" whenever the amount closes the loan; owner-only "Settle for less (waive the rest)" switch under Close loan, with "Cash received", read-only "Waive ₹W", a required "Reason for waiver", and the preview "Cash ₹C + waived ₹W = closes the loan".
+- `lib/features/payments/presentation/widgets/receipt_share_panel.dart` — `waived` ("Loan closed · ₹W waived").
+- `lib/features/payments/presentation/widgets/payment_ledger_list.dart` — waiver rows read "Waived ₹W · {reason}" in neutral `textSecondary`, with the owner Reverse action; when reversed, the title and amount are struck through.
+- `lib/features/payments/presentation/widgets/reverse_payment_dialog.dart` — "Reverse waiver?" copy.
+- `lib/features/contracts/presentation/widgets/contract_header_card.dart` — "Waived ₹W" line when totalWaived > 0.
+- `lib/features/borrowers/presentation/widgets/ledger_entry_tile.dart` — the "Waived" label, no sign, `textSecondary`.
+- `firebase/firestore.rules` — see the **redeploy** note below.
+- Tests:
+  - `test/domain/ledger/waiver_ledger_test.dart` (5);
+  - `test/features/payments/waiver_repository_test.dart` (8);
+  - `test/features/payments/waiver_sheet_test.dart` (7);
+  - `firebase/test/sprint6_waiver.test.js` (11);
+  - `test/domain/models/models_round_trip_test.dart`: enum list + 'waiver'.
+
+Key decisions:
+- **The command carries the snapshot, not a bare contractId.** That matches `RecordPaymentCommand`: outstanding and the flips come from the device's snapshot, so the close works offline. It also carries `role`, so the repository rejects a collector before any write, and the rules deny it as well.
+- **The Dart field is `totalWaived`** (JSON `totalWaivedPaise`), following the `totalPaid` / `totalPaidPaise` convention.
+- **Waiver tx:**
+  - `paidOn` is the sheet's collection date (default today), the same as the cash payment;
+  - mode is null;
+  - `contractActive: false` on both new docs, because the loan closes.
+- **Turning the waiver switch on** clears the amount field for the cash actually received. Turning it off restores the full outstanding. Cash ₹0 (a full write-off at close) is allowed, as in the spec (C ≥ 0); no payment doc is written then.
+- **Collectors** see the Close loan chip (a full payment), never the switch.
+
+Known limitations:
+- **REDEPLOY REQUIRED** (`firebase deploy --only firestore:rules`). Until then, every waiver write is denied by the live rules. Contract creation stays compatible: the app now sends `totalWaivedPaise: 0` and the old create check has no key whitelist. The changes:
+  1. contract create: `totalWaivedPaise` must be absent or int 0;
+  2. contract owner update: `totalWaivedPaise` must be ≥ 0. The collector branch's `onlyChanged` list is unchanged, so collectors can never touch it;
+  3. `txTypes()` gains `'waiver'`. It is owner only, because the non-owner create clause still only admits payment / reschedule;
+  4. `validNewTx`: a waiver needs amount > 0 and a non-empty string `note`.
+- **A reversal whose original is outside the loaded transactions window counts as a payment reversal** in cash metrics (existing behaviour). A waiver reversal far from its waiver would understate cash there. Contract-level figures are unaffected.
+- The "Waived" portfolio figure is computed but not shown yet, per the spec.
+
+Verification:
+- `dart run build_runner build` ok;
+- `flutter analyze`: No issues found;
+- `flutter test`: 771/771 (was 751, +20);
+- `cd firebase && npm test`: 393/393 (was 382, +11);
+- `flutter build apk --debug --target-platform android-x64` built `build/app/outputs/flutter-apk/app-debug.apk`.
+
+Not deployed, not committed.
+
+**Module Lead — Sprint 6 Task 12b Review (attempt 1):**
+Date: 2026-11-23
+
+- Re-ran independently: `flutter analyze` is clean, `flutter test` passes 771/771 and `npm test` passes 393/393.
+- Checklist: the design aligns, the interfaces are consistent, there are no secrets or hard-coded tokens, and validation is in both the UI and the repository. Error handling: two gaps, below.
+- Verified:
+  - the close is offline-safe: one primary batch with only the flips spilling, and no transaction;
+  - a waiver reversal decrements only `totalWaivedPaise`, and a double reversal is blocked;
+  - the rules' `nonNeg(totalWaivedPaise)` rejects the double-reversal race;
+  - there is no collector bypass;
+  - waivers are excluded from cash, the calendar, borrower `collected` and receipts.
+- **F1 (Major):**
+  - The bug: a waiver reversal whose waiver is outside the loaded window is counted as a cash reversal, at `portfolio_metrics.dart:499` and `borrower_summary.dart:222`.
+  - The fix: an unknown original with `mode == null` is a waiver reversal, so its cash delta is 0. Payments always carry a mode and reversals copy it.
+  - Add a unit test.
+- **F2 (Minor):** the payment and the waiver from one close tie on every sort key, so their order falls to the random uuid. The fix is a type rank before the id tie-break (payment first; newest-first list shows the waiver above). It applies in `row_settlement.dart:58`, `borrower_summary.dart:180` and `payment_ledger_list.dart:46-51`. Add a tie test.
+- Advisory:
+  - **A1:** reversing only the cash part of a waiver close reopens the loan with a standing partial waiver. Add a warning in the reverse dialog, or accept it.
+  - **A2:** optionally, enforce in the rules that a waiver goes with `status == closed`, using `getAfter`.
+  - **A3:** the "Paid" label should be `totalPaid − totalWaived`.
+  - **A4:** a rules redeploy is required.
+  - **A5:** add a rules test for an owner update that drives `totalWaivedPaise` below 0.
+- **Verdict: CHANGES REQUESTED** (F1, F2).
+
+**Tester — Sprint 6 Task 12b Results (attempt 1):**
+
+New tests:
+- `test/features/payments/tester/s6b_waiver_test.dart` (17 + 1 skip);
+- `s6b_waiver_sheet_test.dart` (4);
+- `firebase/test/tester_s6b.test.js` (11 + 1 skip).
+
+31 cases covered:
+- happy paths: cash + waiver close, ₹0 write-off, both receipt texts, chip prefill at 400 and 1024 widths;
+- failures: C + W ≠ outstanding, W = 0, blank reason, missing mode, collector or null role, closed or rolledOver contract;
+- edges: waiver reversal reopens with totalPaid untouched, double reversal blocked, re-close, portfolio and borrower cash exclude the waiver;
+- auth: the collector gets the chip but no switch;
+- rules: collector waiver, collector waiver inside a payment batch, note missing or non-string, amount 0 / negative / fractional, immutable waiver, create with totalWaivedPaise ≠ 0, owner update taking it below 0, collector updates.
+
+Full runs: `flutter analyze` is clean, `flutter test` gives 792 passed + 1 skipped, and `npm test` gives 404 passed + 1 skipped.
+
+Bugs Found:
+- **Bug 1 (low):** the rules accept a whitespace-only waiver note, because `validNewTx` checks `note.size() > 0`. The fix is `note.trim().size() > 0`.
+- **Bug 2 (low):** the payment and waiver from one close sort at random in the borrower ledger, through `_chronological`'s uuid tie-break. This is the same issue as Module Lead F2.
+
+Human verification (on device), after `firebase deploy --only firestore:rules`:
+- owner cash + waiver close;
+- receipt hand-off;
+- offline close + restart + sync;
+- collector sees no switch;
+- waiver reversal strikes the row and reopens the loan.
+
+Sprint Test Summary: 29 passed, 2 failed (skipped; Bug 1 and Bug 2).
+
+**Fixes for the Module Lead and Tester findings (Task 12b, attempt 2):**
+- **F1:** a reversal whose original isn't loaded and that carries no mode is treated as a waiver reversal and moves no cash. Changed in `portfolio_metrics.dart` (`_cashDelta`) and `borrower_summary.dart`.
+- **F2 / Bug 2:** a new `lib/domain/ledger/tx_order.dart` adds `compareTxChronological`, which sorts by paidOn → recordedAt → type rank (waiver after payment) → id.
+  - It is used by `row_settlement`, `borrower_summary` and `payment_ledger_list` (reversed there, so newest is first and the waiver shows above its cash).
+  - The cash now always clears the earlier rows and the waiver clears the tail.
+- **Bug 1:** in `firestore.rules`, the waiver note check is now `note.trim().size() > 0`.
+- **A3:** the "Paid" figure on the borrower's active-contract card and on the rollover closing card is now `totalPaid − totalWaived`.
+- **A5:** already covered by Tester row 30.
+- **A1 and A2 accepted for v1:**
+  - the owner can reverse the cash leg and the waiver separately;
+  - waivers are owner-only and the owner is trusted.
+- Test fixtures (`ledger_fixtures.tx` and `txFor`) now give payments and reversals a mode, as real data has. A reversal copies its original's mode.
+- New tests in `waiver_ledger_test.dart` (+5):
+  - an orphan waiver reversal moves no cash, while an orphan payment reversal still does;
+  - same-timestamp tie with both id orders;
+  - the id fallback.
+- The two skipped Tester tests are un-skipped and pass.
+- Verification: `flutter analyze` is clean, `flutter test` passes 798/798 with 0 skipped, and `npm test` passes 405/405 with 0 skipped.
+- **Rules deployed 2026-11-23** to `microfinance-loan-mgr` (waiver rules + trim). The debug APK is installed on emulator-5554 and awaiting human verification.
+
+**Human verification (2026-11-23): PASSED.**
+- The user verified the early-closure waiver on the emulator and approved Sprint 6.
+- The rules are deployed. The debug APK was reinstalled with an uninstall, because the emulator was out of storage, so the user signed in again.
+- **Not separately confirmed by the user; carry forward to a later on-device pass:**
+  - the pay-sheet date picker range;
+  - the WhatsApp / SMS receipt hand-off;
+  - two-device offline excess;
+  - the collector-device view;
+  - the Sprint 5 Reschedule check on the daily loan.
 
 ---
 

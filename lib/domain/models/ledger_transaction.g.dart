@@ -65,6 +65,7 @@ const _$TxTypeEnumMap = {
   TxType.rolloverSettlement: 'rolloverSettlement',
   TxType.reversal: 'reversal',
   TxType.reschedule: 'reschedule',
+  TxType.waiver: 'waiver',
 };
 
 const _$PaymentModeEnumMap = {

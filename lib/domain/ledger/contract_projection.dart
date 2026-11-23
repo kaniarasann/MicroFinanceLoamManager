@@ -138,6 +138,7 @@ final class ContractProjection {
     required this.today,
     required this.rows,
     required this.totalPaid,
+    required this.totalWaived,
     required this.outstanding,
     required this.excess,
     required this.overdueAmount,
@@ -156,8 +157,12 @@ final class ContractProjection {
   /// Effective rows in (dueDate, seq) order, then the extension rows.
   final List<ProjectedRow> rows;
 
-  /// P = Σ payment + Σ rolloverSettlement − Σ reversal.
+  /// P = Σ payment + Σ rolloverSettlement + Σ waiver − Σ reversal.
   final Money totalPaid;
+
+  /// Net early-closure waivers: Σ waiver − Σ reversal of a waiver. Part of
+  /// [totalPaid] (they settle rows) but not cash.
+  final Money totalWaived;
 
   /// max(sanctioned − P, 0).
   final Money outstanding;
@@ -195,7 +200,8 @@ final class ContractProjection {
 }
 
 /// Net paid pool of [contractId] from [transactions]:
-/// Σ payment + Σ rolloverSettlement − Σ reversal (others ignored).
+/// Σ payment + Σ rolloverSettlement + Σ waiver − Σ reversal (others
+/// ignored).
 Money paidPool(String contractId, Iterable<LedgerTransaction> transactions) {
   var pool = 0;
   for (final tx in transactions) {
@@ -203,6 +209,7 @@ Money paidPool(String contractId, Iterable<LedgerTransaction> transactions) {
     switch (tx.type) {
       case TxType.payment:
       case TxType.rolloverSettlement:
+      case TxType.waiver:
         pool += tx.amount.paise;
       case TxType.reversal:
         pool -= tx.amount.paise;
@@ -212,6 +219,27 @@ Money paidPool(String contractId, Iterable<LedgerTransaction> transactions) {
     }
   }
   return Money(pool);
+}
+
+/// Net waived amount of [contractId]: Σ waiver − Σ reversal of a waiver,
+/// floored at 0.
+Money waivedTotal(String contractId, Iterable<LedgerTransaction> transactions) {
+  final own = transactions
+      .where((LedgerTransaction t) => t.contractId == contractId)
+      .toList(growable: false);
+  final waivers = <String>{
+    for (final t in own)
+      if (t.type == TxType.waiver) t.id,
+  };
+  var total = 0;
+  for (final t in own) {
+    if (t.type == TxType.waiver) {
+      total += t.amount.paise;
+    } else if (t.type == TxType.reversal && waivers.contains(t.reversesTxId)) {
+      total -= t.amount.paise;
+    }
+  }
+  return Money(total > 0 ? total : 0);
 }
 
 /// Deterministic projection of one contract (Section 2, "Ledger engine").
@@ -356,6 +384,7 @@ ContractProjection projectContract({
     today: today,
     rows: List<ProjectedRow>.unmodifiable(rows),
     totalPaid: pool,
+    totalWaived: waivedTotal(contract.id, transactions),
     outstanding: Money(sanctioned - p > 0 ? sanctioned - p : 0),
     excess: Money(p - sanctioned > 0 ? p - sanctioned : 0),
     overdueAmount: Money(shortfall),

@@ -12,6 +12,27 @@ import '../../../core/validation/onboarding_validators.dart';
 import '../../../domain/models/models.dart';
 import 'user_settings_repository.dart';
 
+/// One event from [CompanyRepository.watchMemberDoc].
+sealed class MemberDocEvent {
+  const MemberDocEvent();
+}
+
+/// A snapshot of the member doc ([member] null = the snapshot says it does
+/// not exist).
+final class MemberDocSnapshot extends MemberDocEvent {
+  const MemberDocSnapshot(this.member, {required this.serverConfirmed});
+
+  final Member? member;
+
+  /// From the server (`isFromCache == false`) with no pending local writes.
+  final bool serverConfirmed;
+}
+
+/// The listener (or a server read) failed with permission-denied.
+final class MemberDocDenied extends MemberDocEvent {
+  const MemberDocDenied();
+}
+
 /// Companies, the caller's member doc and their membership index.
 class CompanyRepository {
   CompanyRepository({
@@ -38,7 +59,8 @@ class CompanyRepository {
   /// `users/{uid}/memberships/{cid}` + `user_settings/{uid}.activeCompanyId`.
   ///
   /// Validates first (throws [ValidationFailure]). Phones are accepted in
-  /// any common form and stored as E.164. Returns the new company id.
+  /// any common form and stored as E.164. Returns the new company id
+  /// ([companyId] when given, so the caller can track it before the ack).
   Future<String> registerCompany({
     required String uid,
     required String name,
@@ -46,6 +68,7 @@ class CompanyRepository {
     String? phoneE164,
     required String ownerDisplayName,
     String? ownerPhoneE164,
+    String? companyId,
   }) async {
     final trimmedName = name.trim();
     final nameError = OnboardingValidators.companyName(trimmedName);
@@ -59,7 +82,7 @@ class CompanyRepository {
     final ownerPhone = _optionalPhone(ownerPhoneE164, 'ownerPhone');
     final trimmedCity = city?.trim();
 
-    final cid = _uuid.v4();
+    final cid = companyId ?? _uuid.v4();
     final now = _clock.nowIst().toUtc();
 
     final company = Company(
@@ -135,30 +158,65 @@ class CompanyRepository {
       .map((DocumentSnapshot<Company> s) => s.exists ? s.data() : null)
       .transform(_permissionDeniedAsNull<Company>());
 
-  /// The caller's member doc in [cid].
+  /// Raw events for the caller's member doc in [cid], with snapshot
+  /// metadata. The repository never decides "removed": that needs session
+  /// history and lives in `watchMemberAccess` (company layer).
   ///
-  /// Emits null when the doc is confirmed gone: a **server** snapshot that
-  /// does not exist, or permission-denied (rules: not a member any more).
-  /// A cache-only "does not exist" is skipped, so an offline cold start
-  /// with an empty cache never looks like a removal.
-  Stream<Member?> watchMember(String cid, String uid) => _refs
+  /// - [MemberDocSnapshot.serverConfirmed] is true only for a snapshot that
+  ///   came from the server with no local pending writes overlaid.
+  /// - permission-denied becomes a [MemberDocDenied] event (the SDK then
+  ///   closes the listener; the caller re-attaches).
+  ///
+  /// There is deliberately no client API that deletes the caller's own
+  /// membership docs as part of removed-member handling.
+  Stream<MemberDocEvent> watchMemberDoc(String cid, String uid) => _refs
       .member(cid, uid)
       .snapshots(includeMetadataChanges: true)
-      .where(
-        (DocumentSnapshot<Member> s) => s.exists || !s.metadata.isFromCache,
+      .map<MemberDocEvent>(
+        (DocumentSnapshot<Member> s) => MemberDocSnapshot(
+          s.exists ? s.data() : null,
+          serverConfirmed:
+              !s.metadata.isFromCache && !s.metadata.hasPendingWrites,
+        ),
       )
-      .map((DocumentSnapshot<Member> s) => s.exists ? s.data() : null)
-      .transform(_permissionDeniedAsNull<Member>());
+      .transform(
+        StreamTransformer<MemberDocEvent, MemberDocEvent>.fromHandlers(
+          handleError:
+              (Object error, StackTrace st, EventSink<MemberDocEvent> sink) {
+                if (_isPermissionDenied(error)) {
+                  sink.add(const MemberDocDenied());
+                } else {
+                  sink.addError(error, st);
+                }
+              },
+        ),
+      );
 
-  /// Best-effort removal of the caller's own membership index doc after
-  /// they lost access to [cid] (rules allow self-delete). Never throws.
-  Future<void> deleteOwnMembership(String uid, String cid) async {
+  /// One server read of the caller's member doc in [cid]. Returns null when
+  /// the server cannot be reached (offline, timeout, other errors), so the
+  /// caller never mistakes "unknown" for "removed".
+  Future<MemberDocEvent?> fetchMemberDocFromServer(
+    String cid,
+    String uid,
+  ) async {
     try {
-      await _refs.membership(uid, cid).delete().timeout(commitGrace);
+      final s = await _refs
+          .member(cid, uid)
+          .get(const GetOptions(source: Source.server))
+          .timeout(commitGrace);
+      return MemberDocSnapshot(
+        s.exists ? s.data() : null,
+        serverConfirmed: !s.metadata.isFromCache,
+      );
     } on Object catch (e) {
-      developer.log('Membership cleanup failed', name: 'onboarding', error: e);
+      if (_isPermissionDenied(e)) return const MemberDocDenied();
+      developer.log('Member server check failed', name: 'onboarding', error: e);
+      return null;
     }
   }
+
+  static bool _isPermissionDenied(Object error) =>
+      error is FirebaseException && error.code == 'permission-denied';
 
   static String? _optionalPhone(String? input, String field) {
     if (input == null || input.trim().isEmpty) return null;
@@ -172,7 +230,7 @@ class CompanyRepository {
   static StreamTransformer<T?, T?> _permissionDeniedAsNull<T>() =>
       StreamTransformer<T?, T?>.fromHandlers(
         handleError: (Object error, StackTrace st, EventSink<T?> sink) {
-          if (error is FirebaseException && error.code == 'permission-denied') {
+          if (_isPermissionDenied(error)) {
             sink.add(null);
           } else {
             sink.addError(error, st);

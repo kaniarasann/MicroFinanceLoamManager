@@ -47,6 +47,11 @@ _Contract _$ContractFromJson(Map<String, dynamic> json) => _Contract(
       : const MoneyPaiseConverter().fromJson(
           (json['totalPaidPaise'] as num).toInt(),
         ),
+  totalWaived: json['totalWaivedPaise'] == null
+      ? Money.zero
+      : const MoneyPaiseConverter().fromJson(
+          (json['totalWaivedPaise'] as num).toInt(),
+        ),
   lastPaymentOn: const NullableCivilDateConverter().fromJson(
     json['lastPaymentOn'] as String?,
   ),
@@ -90,6 +95,7 @@ Map<String, dynamic> _$ContractToJson(_Contract instance) => <String, dynamic>{
   'guarantor': instance.guarantor,
   'notes': instance.notes,
   'totalPaidPaise': const MoneyPaiseConverter().toJson(instance.totalPaid),
+  'totalWaivedPaise': const MoneyPaiseConverter().toJson(instance.totalWaived),
   'lastPaymentOn': const NullableCivilDateConverter().toJson(
     instance.lastPaymentOn,
   ),

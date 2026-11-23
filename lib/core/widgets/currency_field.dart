@@ -21,6 +21,7 @@ class CurrencyField extends StatefulWidget {
     this.autofocus = false,
     this.focusNode,
     this.textInputAction,
+    this.large = false,
     super.key,
   });
 
@@ -37,6 +38,9 @@ class CurrencyField extends StatefulWidget {
   final bool autofocus;
   final FocusNode? focusNode;
   final TextInputAction? textInputAction;
+
+  /// Big amount entry (Record Payment): currencyDisplay digits.
+  final bool large;
 
   @override
   State<CurrencyField> createState() => _CurrencyFieldState();
@@ -73,13 +77,17 @@ class _CurrencyFieldState extends State<CurrencyField> {
       textInputAction: widget.textInputAction,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
       inputFormatters: const <TextInputFormatter>[IndianGroupingFormatter()],
-      style: AppTextStyles.titleMdTabular,
+      style: widget.large
+          ? AppTextStyles.currencyDisplayTabular
+          : AppTextStyles.titleMdTabular,
       onChanged: (String text) => widget.onChanged?.call(parseInrInput(text)),
       decoration: InputDecoration(
         hintText: widget.hintText,
-        hintStyle: AppTextStyles.titleMdTabular.copyWith(
-          color: AppColors.textTertiary,
-        ),
+        hintStyle:
+            (widget.large
+                    ? AppTextStyles.currencyDisplayTabular
+                    : AppTextStyles.titleMdTabular)
+                .copyWith(color: AppColors.textTertiary),
         errorText: widget.errorText,
         helperText: widget.helperText,
         prefixIcon: const Padding(

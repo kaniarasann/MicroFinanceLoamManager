@@ -24,7 +24,17 @@ enum ContractStatus { active, closed, rolledOver, cancelled }
 enum InstallmentKind { base, rescheduled }
 
 @JsonEnum()
-enum TxType { disbursement, payment, rolloverSettlement, reversal, reschedule }
+enum TxType {
+  disbursement,
+  payment,
+  rolloverSettlement,
+  reversal,
+  reschedule,
+
+  /// Owner-only early-closure discount: settles installments like a
+  /// payment but moves no cash.
+  waiver,
+}
 
 @JsonEnum()
 enum PaymentMode { upi, cash, bank }

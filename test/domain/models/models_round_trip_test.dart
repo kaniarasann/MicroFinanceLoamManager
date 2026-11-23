@@ -166,6 +166,7 @@ void main() {
         'rolloverSettlement',
         'reversal',
         'reschedule',
+        'waiver',
       ]);
       expect(PaymentMode.values.map((PaymentMode e) => e.name), <String>[
         'upi',

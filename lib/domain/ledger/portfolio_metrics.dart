@@ -172,6 +172,7 @@ final class PortfolioMetrics {
     required this.totalNetDisbursed,
     required this.sanctionedReceivable,
     required this.totalCollected,
+    required this.totalWaived,
     required this.totalOverdue,
     required this.overdueInstallmentCount,
     required this.maxDaysOverdue,
@@ -195,8 +196,13 @@ final class PortfolioMetrics {
   final Money sanctionedReceivable;
 
   /// Cash collected: Σ payment − Σ reversal of payments in the window.
-  /// rolloverSettlement is excluded (no cash moves).
+  /// rolloverSettlement and waiver are excluded (no cash moves), and so are
+  /// reversals of them.
   final Money totalCollected;
+
+  /// Early-closure waivers in the window: Σ waiver − Σ reversal of a known
+  /// waiver. Not cash; not displayed yet.
+  final Money totalWaived;
 
   /// Σ shortfall S of active contracts.
   final Money totalOverdue;
@@ -361,7 +367,13 @@ PortfolioMetrics computePortfolio({
   var collected = 0;
   var receivedToday = 0;
   var collectedThisMonth = 0;
+  var waived = 0;
   for (final tx in allTransactions) {
+    if (tx.type == TxType.waiver) waived += tx.amount.paise;
+    if (tx.type == TxType.reversal &&
+        typeById[tx.reversesTxId] == TxType.waiver) {
+      waived -= tx.amount.paise;
+    }
     final cash = _cashDelta(tx, typeById);
     if (cash == 0) continue;
     collected += cash;
@@ -451,6 +463,7 @@ PortfolioMetrics computePortfolio({
     totalNetDisbursed: Money(netDisbursed),
     sanctionedReceivable: receivableMoney,
     totalCollected: Money(collected),
+    totalWaived: Money(waived > 0 ? waived : 0),
     totalOverdue: Money(overdue),
     overdueInstallmentCount: overdueCount,
     maxDaysOverdue: maxDays,
@@ -473,8 +486,8 @@ CivilDate mondayOf(CivilDate date) => date.addDays(1 - date.weekday);
 
 /// Cash effect of [tx]: +payment, −reversal of a payment; 0 otherwise.
 /// A reversal whose original is not in the window is assumed to reverse a
-/// payment; a reversal of a known non-payment (e.g. a rolloverSettlement)
-/// moves no cash.
+/// payment when it carries a mode (a waiver reversal has none); a reversal of a known non-payment (a rolloverSettlement or a
+/// waiver) moves no cash. Waivers themselves are never cash.
 int _cashDelta(LedgerTransaction tx, Map<String, TxType> typeById) {
   switch (tx.type) {
     case TxType.payment:
@@ -484,10 +497,14 @@ int _cashDelta(LedgerTransaction tx, Map<String, TxType> typeById) {
           ? null
           : typeById[tx.reversesTxId];
       if (original != null && original != TxType.payment) return 0;
+      // Unknown original with no mode: a waiver reversal (payments always
+      // carry a mode and reversals copy it; waivers never do). Not cash.
+      if (original == null && tx.mode == null) return 0;
       return -tx.amount.paise;
     case TxType.disbursement:
     case TxType.rolloverSettlement:
     case TxType.reschedule:
+    case TxType.waiver:
       return 0;
   }
 }

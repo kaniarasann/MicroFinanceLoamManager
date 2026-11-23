@@ -106,6 +106,8 @@ LedgerTransaction tx(
   TxType type = TxType.payment,
   String? id,
   String? reversesTxId,
+  PaymentMode? mode,
+  bool noMode = false,
 }) => LedgerTransaction(
   id: id ?? 'tx-${_txSeq++}',
   contractId: contractId,
@@ -116,6 +118,14 @@ LedgerTransaction tx(
   amount: amount,
   paidOn: paidOn,
   reversesTxId: reversesTxId,
+  // Real payments always carry a mode and reversals copy the original's;
+  // waivers, disbursements and settlements carry none.
+  mode: noMode
+      ? null
+      : mode ??
+            (type == TxType.payment || type == TxType.reversal
+                ? PaymentMode.upi
+                : null),
   recordedBy: 'uid-col',
   recordedByName: 'Suresh',
   clientRecordedAt: _t,
