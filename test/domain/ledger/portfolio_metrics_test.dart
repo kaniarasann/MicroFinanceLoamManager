@@ -159,10 +159,10 @@ void main() {
       final r = m.receivableBreakdown;
       expect(r.collectedThisMonth.amount, rs(4000));
       expect(r.collectedThisMonth.bps, 347); // 4,000 / 1,15,000
-      // A: 12/19/26 Dec + 2 Jan = 40k; B: 6–30 Dec + ext 31 Dec = 26k;
-      // C: 6 Dec 25k.
-      expect(r.upcoming30.amount, rs(91000));
-      expect(r.upcoming30.bps, 7913);
+      // A: 12/19/26 Dec + 2 Jan = 40k; B: 6–30 Dec = 25k (the 31 Dec
+      // extension re-plans overdue money and is left out); C: 6 Dec 25k.
+      expect(r.upcoming30.amount, rs(90000));
+      expect(r.upcoming30.bps, 7826);
       expect(r.overdue.amount, rs(25000));
       expect(r.overdue.bps, 2173);
     });

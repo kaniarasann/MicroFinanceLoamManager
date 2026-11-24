@@ -71,7 +71,7 @@ class StatusPill extends StatelessWidget {
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.labelMdStrong.copyWith(color: fg),
+                  style: AppTextStyles.labelMdStrongTabular.copyWith(color: fg),
                 ),
               ),
             ],

@@ -19,6 +19,15 @@ abstract final class AppColors {
   static const Color overdueTint = Color(0xFFFFF1EB);
   static const Color overdueBorder = Color(0xFFFED7AA);
 
+  /// Collections chart: the current (incomplete) period's lighter sage.
+  static const Color collectedSoft = Color(0x8C2E7D5B);
+
+  /// Chart "due" bar: the neutral border grey.
+  static const Color chartDue = border;
+
+  /// Chart tooltip background.
+  static const Color tooltip = textPrimary;
+
   static const Color textPrimary = Color(0xFF111827);
   static const Color textSecondary = Color(0xFF6B7280);
   static const Color textTertiary = Color(0xFF9CA3AF);
@@ -105,6 +114,18 @@ abstract final class AppInsets {
   static const EdgeInsets listRow = EdgeInsets.symmetric(
     vertical: AppSpacing.sm,
   );
+
+  /// Chart tooltip padding.
+  static const EdgeInsets tooltip = EdgeInsets.symmetric(
+    horizontal: AppSpacing.sm + AppSpacing.xs,
+    vertical: AppSpacing.sm,
+  );
+
+  /// Scrolling page body: top gap and room above the nav bar.
+  static const EdgeInsets pageBody = EdgeInsets.only(
+    top: AppSpacing.sm,
+    bottom: AppSpacing.xl,
+  );
 }
 
 /// Fixed component dimensions.
@@ -168,6 +189,38 @@ abstract final class AppSizes {
   /// Dashed border of auto-extension rows: dash and gap length.
   static const double dashLength = 6;
   static const double dashGap = 4;
+
+  /// Collections chart: plot height, the wide "due" bar and the narrow
+  /// "collected" bar inside it, the y-axis label column, x labels, and
+  /// the rod corner radius (4dp rounded tops).
+  static const double chartHeight = 200;
+  static const double chartDueBar = 22;
+  static const double chartCollectedBar = 12;
+  static const double chartAxisReserved = 44;
+  static const double chartBottomReserved = 24;
+  static const double chartGridLine = 1;
+  static const double chartTooltipMaxWidth = 220;
+
+  /// Below this width per period the chart labels every other bar.
+  static const double chartMinLabelSlot = 52;
+
+  /// Chart legend colour swatch.
+  static const double legendSwatch = 12;
+
+  /// Horizontal slop added to each bar so the tap target is >= 44dp.
+  static const double chartTouchSlop = 12;
+
+  /// Receivable breakdown: thin share bar.
+  static const double shareBarHeight = 6;
+
+  /// Calendar month grid: one day cell (>= 48dp touch target).
+  static const double calendarCell = 48;
+
+  /// Calendar: the selected day's filled circle.
+  static const double calendarDayBadge = 32;
+
+  /// KPI / summary tiles and alert icon badge.
+  static const double alertBadge = 40;
 }
 
 /// Corner radii.
@@ -355,6 +408,7 @@ abstract final class AppTextStyles {
   static final TextStyle bodySmTabular = _tab(bodySm);
   static final TextStyle labelLgTabular = _tab(labelLg);
   static final TextStyle labelMdTabular = _tab(labelMd);
+  static final TextStyle labelMdStrongTabular = _tab(labelMdStrong);
   static const TextStyle currencyDisplayTabular = currencyDisplay;
   static const TextStyle currencyItemTabular = currencyItem;
 
@@ -369,6 +423,7 @@ abstract final class AppTextStyles {
     'bodySmTabular': bodySmTabular,
     'labelLgTabular': labelLgTabular,
     'labelMdTabular': labelMdTabular,
+    'labelMdStrongTabular': labelMdStrongTabular,
     'currencyDisplay': currencyDisplay,
     'currencyItem': currencyItem,
     'currencyDisplayTabular': currencyDisplayTabular,

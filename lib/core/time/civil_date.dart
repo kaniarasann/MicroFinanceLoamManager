@@ -132,3 +132,14 @@ String formatCivilDateDayMonth(CivilDate date) =>
 
 /// Short English month name for 1–12 → "Jan" … "Dec".
 String civilMonthShortName(int month) => _monthsShort[month - 1];
+
+const List<String> _monthsLong = <String>[
+  'January', 'February', 'March', 'April', 'May', 'June', //
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/// Full English month name for 1–12 → "January" … "December".
+String civilMonthName(int month) => _monthsLong[month - 1];
+
+/// Short English weekday name for 1 (Mon) – 7 (Sun) → "Mon" … "Sun".
+String civilWeekdayShortName(int weekday) => _weekdaysShort[weekday - 1];

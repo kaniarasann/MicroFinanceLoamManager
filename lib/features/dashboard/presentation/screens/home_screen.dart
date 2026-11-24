@@ -11,13 +11,16 @@ import '../../../../core/widgets/adaptive_scaffold.dart';
 import '../../../../core/widgets/day_ticker.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../borrowers/presentation/screens/borrowers_screen.dart';
+import '../../../calendar/presentation/screens/calendar_screen.dart';
 import '../../../company/application/company_providers.dart';
 import '../../../company/presentation/widgets/company_switcher_sheet.dart';
 import '../../../company/presentation/widgets/role_pill.dart';
 import '../../../../domain/models/enums.dart';
+import 'dashboard_screen.dart';
 
-/// Placeholder Dashboard inside the app shell. The header shows
-/// "{Company} ▾ · {Role}" and opens the company switcher.
+/// The company shell: Dashboard · Calendar · Borrowers · Settings. The
+/// header shows "{Company} ▾ · {Role}" and opens the company switcher.
+/// Owners get the "New loan" FAB in the expanded rail.
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -43,6 +46,9 @@ class HomeScreen extends ConsumerStatefulWidget {
       label: 'Settings',
     ),
   ];
+
+  static const int dashboardIndex = 0;
+  static const int calendarIndex = 1;
 
   /// Index of the Borrowers destination.
   static const int borrowersIndex = 2;
@@ -133,19 +139,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
           ],
         ),
+        floatingActionButton: role == Role.owner
+            ? FloatingActionButton(
+                key: const ValueKey<String>('rail_new_loan'),
+                heroTag: 'rail_new_loan',
+                tooltip: 'New loan',
+                onPressed: () =>
+                    unawaited(context.push<void>(AppRoutes.newContract())),
+                child: const Icon(Icons.add),
+              )
+            : null,
         applyMargins: _index != HomeScreen.borrowersIndex,
-        body: _index == HomeScreen.borrowersIndex
-            ? const BorrowersScreen()
-            : EmptyState(
-                key: ValueKey<String>('home_placeholder_$_index'),
-                icon: HomeScreen.destinations[_index].icon,
-                title: _index == 0
-                    ? 'Dashboard coming in Sprint 7'
-                    : '$label is on its way',
-                message:
-                    'Your company is set up. Lending features arrive in the '
-                    'next sprints.',
-              ),
+        body: switch (_index) {
+          HomeScreen.dashboardIndex => DashboardScreen(
+            onOpenCalendar: () =>
+                setState(() => _index = HomeScreen.calendarIndex),
+          ),
+          HomeScreen.calendarIndex => const CalendarScreen(),
+          HomeScreen.borrowersIndex => const BorrowersScreen(),
+          _ => EmptyState(
+            key: ValueKey<String>('home_placeholder_$_index'),
+            icon: HomeScreen.destinations[_index].icon,
+            title: '$label is on its way',
+            message: 'Settings arrive in the next sprint.',
+          ),
+        },
       ),
     );
   }

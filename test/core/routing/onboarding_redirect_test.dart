@@ -158,7 +158,7 @@ void main() {
       expect(find.byType(HomeScreen), findsOneWidget);
       expect(find.text('A Co'), findsOneWidget);
       expect(find.text('· Owner'), findsOneWidget);
-      expect(find.text('Dashboard coming in Sprint 7'), findsOneWidget);
+      expect(find.text('Dashboard'), findsWidgets);
 
       // Sprint 5: the Borrowers destination shows the borrower list.
       await tester.tap(find.text('Borrowers').last);

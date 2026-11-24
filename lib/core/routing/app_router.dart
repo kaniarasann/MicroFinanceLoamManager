@@ -17,6 +17,7 @@ import '../../features/rollover/presentation/screens/rollover_screen.dart';
 import '../../features/contracts/presentation/screens/create_contract_screen.dart';
 import '../../features/company/presentation/members_screen.dart';
 import '../../features/dashboard/presentation/screens/home_screen.dart';
+import '../../features/overdue/presentation/screens/overdue_screen.dart';
 import '../../features/onboarding/application/onboarding_providers.dart';
 import '../../features/onboarding/presentation/screens/join_company_screen.dart';
 import '../../features/onboarding/presentation/screens/register_company_screen.dart';
@@ -37,8 +38,11 @@ abstract final class AppRoutes {
   /// Members & invites (Settings is Sprint 8; reached from the Home menu).
   static const String members = '/settings/members';
 
+  /// Overdue tracker (from the dashboard; notification payload in Sprint 8).
+  static const String overdue = '/overdue';
+
   /// In-app routes reachable once a company is ready.
-  static const Set<String> companyShell = <String>{home, members};
+  static const Set<String> companyShell = <String>{home, members, overdue};
 
   /// Borrower profile (compact windows; tablets show it in the split view).
   static const String borrowers = '/borrowers';
@@ -265,6 +269,11 @@ GoRouter appRouter(Ref ref) {
                 RolloverScreen(contractId: state.pathParameters['id']!),
           ),
         ],
+      ),
+      GoRoute(
+        path: AppRoutes.overdue,
+        builder: (BuildContext context, GoRouterState state) =>
+            const OverdueScreen(),
       ),
       GoRoute(
         path: AppRoutes.members,

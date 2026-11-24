@@ -2,6 +2,7 @@ import '../../core/money/money.dart';
 import '../../core/time/civil_date.dart';
 import '../models/contract.dart';
 import '../models/enums.dart';
+import '../models/installment.dart';
 import '../models/ledger_transaction.dart';
 import 'contract_projection.dart';
 
@@ -14,32 +15,80 @@ enum OverdueSeverity { critical, recent }
 /// Days overdue above which an item is [OverdueSeverity.critical].
 const int criticalOverdueDays = 3;
 
-/// One row due today, on any contract.
-final class TodayDueItem {
-  const TodayDueItem({
+/// Months of history (including the current one) the dashboard loads for
+/// inactive contracts' transactions: the 12-month chart window.
+const int historyWindowMonths = 12;
+
+/// First day of the history window that covers every chart period and the
+/// calendar's back-navigation: the 1st of the month 11 months before
+/// [today]'s month.
+CivilDate chartWindowStart(CivilDate today) => CivilDate(
+  today.year,
+  today.month,
+  1,
+).addMonthsClamped(-(historyWindowMonths - 1), preferredDay: 1);
+
+/// One open or settled schedule row of an active contract, with the
+/// borrower details the dashboard, calendar and contact actions need.
+final class DueRowItem {
+  const DueRowItem({
     required this.contractId,
+    required this.borrowerId,
     required this.borrowerName,
+    required this.borrowerPhoneE164,
     required this.loanNo,
+    required this.frequency,
     required this.seq,
+    required this.dueDate,
     required this.amount,
     required this.paid,
+    required this.status,
+    required this.daysOverdue,
     required this.isExtension,
+    required this.cyclesTotal,
+    this.sourceLabel,
+    this.contractStatus = ContractStatus.active,
   });
 
   final String contractId;
+  final String borrowerId;
   final String borrowerName;
+  final String borrowerPhoneE164;
   final int loanNo;
+  final Frequency frequency;
   final int seq;
+  final CivilDate dueDate;
 
   /// The row's effective due.
   final Money amount;
 
   /// FIFO-allocated paid amount on that row.
   final Money paid;
+  final RowStatus status;
+  final int daysOverdue;
   final bool isExtension;
 
+  /// The contract's cycle count (extensions included), for "8/30".
+  final int cyclesTotal;
+
+  /// Extension rows: which shortfall they re-plan ("missed on 31 Oct
+  /// (Inst. 2)"); null otherwise.
+  final String? sourceLabel;
+
+  /// The loan's status. Rows of closed / rolled-over loans (history) are
+  /// always settled and never take a payment.
+  final ContractStatus contractStatus;
+
+  bool get isHistory => contractStatus != ContractStatus.active;
+
   bool get isPaid => paid >= amount;
+
+  /// Unpaid part of the row (never negative).
+  Money get remaining => isPaid ? Money.zero : amount - paid;
 }
+
+/// One row due today, on any contract.
+typedef TodayDueItem = DueRowItem;
 
 /// "Today's due" card.
 final class TodayDue {
@@ -55,6 +104,17 @@ final class TodayDue {
   /// Net cash received today: payments − reversals with paidOn == today.
   final Money received;
   final List<TodayDueItem> items;
+
+  /// Rows due today that are fully paid / still open.
+  int get collectedCount => items.where((TodayDueItem i) => i.isPaid).length;
+  int get pendingCount => items.length - collectedCount;
+
+  /// received as bps of amountDue, capped at 100% (0 when nothing is due).
+  int get progressBps {
+    final bps = received.percentOf(amountDue);
+    if (bps < 0) return 0;
+    return bps > 10000 ? 10000 : bps;
+  }
 }
 
 /// One bar of the collections chart.
@@ -81,6 +141,40 @@ final class CollectionBucket {
 
   /// The bucket containing today (partial).
   final bool isCurrent;
+
+  /// collected as bps of due (0 when nothing was due).
+  int get rateBps => collected.percentOf(due);
+}
+
+/// Totals of a collections series (the chart's summary line).
+final class SeriesTotals {
+  const SeriesTotals({required this.due, required this.collected});
+
+  factory SeriesTotals.of(Iterable<CollectionBucket> buckets) {
+    var due = 0;
+    var collected = 0;
+    for (final b in buckets) {
+      due += b.due.paise;
+      collected += b.collected.paise;
+    }
+    return SeriesTotals(due: Money(due), collected: Money(collected));
+  }
+
+  final Money due;
+  final Money collected;
+
+  /// collected as bps of due (0 when nothing was due).
+  int get rateBps => collected.percentOf(due);
+
+  /// The largest of any bucket's due or collected (the chart's y range).
+  static Money peak(Iterable<CollectionBucket> buckets) {
+    var max = 0;
+    for (final b in buckets) {
+      if (b.due.paise > max) max = b.due.paise;
+      if (b.collected.paise > max) max = b.collected.paise;
+    }
+    return Money(max);
+  }
 }
 
 /// An amount with its share of the sanctioned receivable.
@@ -116,6 +210,10 @@ final class CalendarDay {
     required this.scheduledCount,
     required this.overdue,
     required this.overdueCount,
+    this.settled = Money.zero,
+    this.settledCount = 0,
+    this.pending = Money.zero,
+    this.pendingCount = 0,
   });
 
   final CivilDate date;
@@ -131,6 +229,52 @@ final class CalendarDay {
   /// Σ unpaid amount of rows due this day that are overdue.
   final Money overdue;
   final int overdueCount;
+
+  /// Σ FIFO-paid amount of rows due this day; count of fully paid rows.
+  final Money settled;
+  final int settledCount;
+
+  /// Σ unpaid amount of open base / rescheduled rows due this day that are
+  /// not overdue (due today, upcoming, planned). Open extension rows add to
+  /// [pendingCount] (the amber dot) but not to the amount: they re-plan
+  /// money already counted as overdue.
+  final Money pending;
+  final int pendingCount;
+
+  /// Status dots: sage (something paid), amber (open, not late),
+  /// terracotta (overdue).
+  bool get hasCollectedDot => settled.isPositive;
+  bool get hasPendingDot => pendingCount > 0;
+  bool get hasOverdueDot => overdueCount > 0;
+}
+
+/// Month legend totals of the calendar (row based, like the dots).
+final class CalendarTotals {
+  const CalendarTotals({
+    required this.settled,
+    required this.pending,
+    required this.overdue,
+  });
+
+  factory CalendarTotals.of(Iterable<CalendarDay> days) {
+    var settled = 0;
+    var pending = 0;
+    var overdue = 0;
+    for (final d in days) {
+      settled += d.settled.paise;
+      pending += d.pending.paise;
+      overdue += d.overdue.paise;
+    }
+    return CalendarTotals(
+      settled: Money(settled),
+      pending: Money(pending),
+      overdue: Money(overdue),
+    );
+  }
+
+  final Money settled;
+  final Money pending;
+  final Money overdue;
 }
 
 /// One overdue row in the overdue tracker.
@@ -143,11 +287,17 @@ final class OverdueItem {
     required this.dueDate,
     required this.amount,
     required this.daysOverdue,
+    this.borrowerId = '',
+    this.borrowerPhoneE164 = '',
+    this.frequency = Frequency.weekly,
   });
 
   final String contractId;
+  final String borrowerId;
   final String borrowerName;
+  final String borrowerPhoneE164;
   final int loanNo;
+  final Frequency frequency;
   final int seq;
   final CivilDate dueDate;
 
@@ -155,14 +305,37 @@ final class OverdueItem {
   final Money amount;
   final int daysOverdue;
 
-  OverdueSeverity get severity => daysOverdue > criticalOverdueDays
-      ? OverdueSeverity.critical
-      : OverdueSeverity.recent;
+  OverdueSeverity get severity => severityFor(daysOverdue);
+}
+
+/// [OverdueSeverity.critical] above [criticalOverdueDays], else recent.
+OverdueSeverity severityFor(int daysOverdue) =>
+    daysOverdue > criticalOverdueDays
+    ? OverdueSeverity.critical
+    : OverdueSeverity.recent;
+
+/// A contract whose paid pool exceeds its sanctioned amount (a duplicate
+/// offline collection, or a payment that landed after a rollover).
+final class ExcessItem {
+  const ExcessItem({
+    required this.contractId,
+    required this.borrowerName,
+    required this.loanNo,
+    required this.status,
+    required this.excess,
+  });
+
+  final String contractId;
+  final String borrowerName;
+  final int loanNo;
+  final ContractStatus status;
+  final Money excess;
 }
 
 /// Dashboard, chart, calendar and overdue-tracker figures for the active
-/// company. Pure: [collectionsSeries] and [calendarBuckets] are computed
-/// from the inputs on each call (memoise in the provider layer).
+/// company. Pure: [collectionsSeries], [calendarBuckets] and
+/// [dueItemsBetween] are computed from the inputs on each call (memoise in
+/// the provider layer).
 final class PortfolioMetrics {
   PortfolioMetrics._({
     required this.today,
@@ -179,25 +352,32 @@ final class PortfolioMetrics {
     required this.todayDue,
     required this.receivableBreakdown,
     required this.overdueList,
+    required this.excessToReview,
+    required List<DueRowItem> historyRows,
   }) : _projections = projections,
        _transactions = transactions,
-       _typeById = typeById;
+       _typeById = typeById,
+       _historyRows = historyRows;
 
   final CivilDate today;
   final List<ContractProjection> _projections;
   final List<LedgerTransaction> _transactions;
   final Map<String, TxType> _typeById;
 
+  /// Settled rows of history contracts inside the loaded window.
+  final List<DueRowItem> _historyRows;
+
   /// Σ netDisbursed of every contract in `contractsById` (active and
-  /// closed / rolled over).
+  /// closed / rolled over) plus `historyContracts`.
   final Money totalNetDisbursed;
 
   /// Σ outstanding of active contracts.
   final Money sanctionedReceivable;
 
-  /// Cash collected: Σ payment − Σ reversal of payments in the window.
-  /// rolloverSettlement and waiver are excluded (no cash moves), and so are
-  /// reversals of them.
+  /// Cash collected: Σ payment − Σ reversal of payments in the window, plus
+  /// the cached cash of `historyContracts` (whose transactions are then
+  /// not counted again). rolloverSettlement and waiver are excluded (no
+  /// cash moves), and so are reversals of them.
   final Money totalCollected;
 
   /// Early-closure waivers in the window: Σ waiver − Σ reversal of a known
@@ -213,6 +393,49 @@ final class PortfolioMetrics {
 
   /// Sorted by daysOverdue desc, then loanNo, then seq.
   final List<OverdueItem> overdueList;
+
+  /// Contracts holding excess (largest first): active projections with
+  /// excess and history contracts whose cached paid pool exceeds the
+  /// sanctioned amount.
+  final List<ExcessItem> excessToReview;
+
+  /// Number of active contracts.
+  int get activeContractCount => _projections.length;
+
+  /// totalOverdue as bps of sanctionedReceivable (the tracker's risk card).
+  int get overdueRiskBps => totalOverdue.percentOf(sanctionedReceivable);
+
+  /// Distinct active contracts with an overdue row.
+  int get overdueLoanCount =>
+      overdueList.map((OverdueItem i) => i.contractId).toSet().length;
+
+  /// Schedule rows of active contracts due in [from]..[to] (inclusive),
+  /// excluding rows rescheduled away. Sorted by date, then open rows before
+  /// paid ones, then loanNo, contractId and seq.
+  List<DueRowItem> dueItemsBetween(CivilDate from, CivilDate to) {
+    final out = <DueRowItem>[];
+    for (final p in _projections) {
+      for (final row in p.rows) {
+        if (row.isRescheduledAway) continue;
+        if (row.dueDate.isBefore(from) || row.dueDate.isAfter(to)) continue;
+        out.add(_item(p, row));
+      }
+    }
+    for (final h in _historyRows) {
+      if (h.dueDate.isBefore(from) || h.dueDate.isAfter(to)) continue;
+      out.add(h);
+    }
+    out.sort((DueRowItem a, DueRowItem b) {
+      final byDate = a.dueDate.compareTo(b.dueDate);
+      if (byDate != 0) return byDate;
+      if (a.isPaid != b.isPaid) return a.isPaid ? 1 : -1;
+      return _compareRowIds(a, b);
+    });
+    return List<DueRowItem>.unmodifiable(out);
+  }
+
+  /// Rows due on [date] (see [dueItemsBetween]).
+  List<DueRowItem> dayItems(CivilDate date) => dueItemsBetween(date, date);
 
   /// Collections chart buckets, oldest first; the last one is current.
   List<CollectionBucket> collectionsSeries(ChartPeriod period) {
@@ -266,6 +489,10 @@ final class PortfolioMetrics {
         if (i >= 0) due[i] += row.due.paise;
       }
     }
+    for (final h in _historyRows) {
+      final i = indexOf(h.dueDate);
+      if (i >= 0) due[i] += h.amount.paise;
+    }
     for (final tx in _transactions) {
       final cash = _cashDelta(tx, _typeById);
       if (cash == 0) continue;
@@ -296,6 +523,10 @@ final class PortfolioMetrics {
     final scheduledCount = List<int>.filled(days, 0);
     final overdue = List<int>.filled(days, 0);
     final overdueCount = List<int>.filled(days, 0);
+    final settled = List<int>.filled(days, 0);
+    final settledCount = List<int>.filled(days, 0);
+    final pending = List<int>.filled(days, 0);
+    final pendingCount = List<int>.filled(days, 0);
 
     for (final p in _projections) {
       for (final row in p.rows) {
@@ -306,11 +537,26 @@ final class PortfolioMetrics {
         final i = d.day - 1;
         scheduled[i] += row.due.paise;
         scheduledCount[i]++;
-        if (row.status == RowStatus.overdue) {
+        settled[i] += row.paid.paise;
+        if (!row.isOpen) {
+          settledCount[i]++;
+        } else if (row.status == RowStatus.overdue) {
           overdue[i] += row.remaining.paise;
           overdueCount[i]++;
+        } else {
+          if (!row.isExtension) pending[i] += row.remaining.paise;
+          pendingCount[i]++;
         }
       }
+    }
+    for (final h in _historyRows) {
+      final d = h.dueDate;
+      if (d.year != year || d.month != month) continue;
+      final i = d.day - 1;
+      scheduled[i] += h.amount.paise;
+      scheduledCount[i]++;
+      settled[i] += h.amount.paise;
+      settledCount[i]++;
     }
     for (final tx in _transactions) {
       final d = tx.paidOn;
@@ -331,10 +577,88 @@ final class PortfolioMetrics {
         scheduledCount: scheduledCount[i],
         overdue: Money(overdue[i]),
         overdueCount: overdueCount[i],
+        settled: Money(settled[i]),
+        settledCount: settledCount[i],
+        pending: Money(pending[i]),
+        pendingCount: pendingCount[i],
       ),
       growable: false,
     );
   }
+}
+
+DueRowItem _item(ContractProjection p, ProjectedRow row) {
+  final c = p.contract;
+  return DueRowItem(
+    contractId: c.id,
+    borrowerId: c.borrowerId,
+    borrowerName: c.borrowerName,
+    borrowerPhoneE164: c.borrowerPhoneE164,
+    loanNo: c.loanNo,
+    frequency: c.frequency,
+    seq: row.seq,
+    dueDate: row.dueDate,
+    amount: row.due,
+    paid: row.paid,
+    status: row.status,
+    daysOverdue: row.daysOverdue,
+    isExtension: row.isExtension,
+    cyclesTotal: p.cyclesTotal,
+    sourceLabel: row.sourceLabel,
+  );
+}
+
+/// Settled rows of history contracts: effective due
+/// (`amountDue − rescheduledOut`) > 0, fully paid. A closed loan was paid
+/// (or waived) to zero; a rolled-over loan's unpaid rows were settled by
+/// the rollover.
+List<DueRowItem> _historyItems(
+  Map<String, Contract> history,
+  Iterable<Installment> installments,
+) {
+  final byContract = <String, Map<String, Installment>>{};
+  for (final i in installments) {
+    if (!history.containsKey(i.contractId)) continue;
+    (byContract[i.contractId] ??= <String, Installment>{})[i.id] = i;
+  }
+  final out = <DueRowItem>[];
+  byContract.forEach((String cid, Map<String, Installment> rows) {
+    final c = history[cid]!;
+    final live = <Installment>[
+      for (final i in rows.values)
+        if (i.amountDue.paise - i.rescheduledOut.paise > 0) i,
+    ];
+    for (final i in live) {
+      final due = Money(i.amountDue.paise - i.rescheduledOut.paise);
+      out.add(
+        DueRowItem(
+          contractId: c.id,
+          borrowerId: c.borrowerId,
+          borrowerName: c.borrowerName,
+          borrowerPhoneE164: c.borrowerPhoneE164,
+          loanNo: c.loanNo,
+          frequency: c.frequency,
+          seq: i.seq,
+          dueDate: i.dueDate,
+          amount: due,
+          paid: due,
+          status: RowStatus.paid,
+          daysOverdue: 0,
+          isExtension: false,
+          cyclesTotal: live.length,
+          contractStatus: c.status,
+        ),
+      );
+    }
+  });
+  return out;
+}
+
+int _compareRowIds(DueRowItem a, DueRowItem b) {
+  final byLoan = a.loanNo.compareTo(b.loanNo);
+  if (byLoan != 0) return byLoan;
+  final byContract = a.contractId.compareTo(b.contractId);
+  return byContract != 0 ? byContract : a.seq.compareTo(b.seq);
 }
 
 /// Folds per-contract projections into the portfolio figures.
@@ -345,15 +669,35 @@ final class PortfolioMetrics {
 ///   totalCollected, received-today and the collected series.
 /// - [contractsById]: every loaded contract (active and closed); drives
 ///   totalNetDisbursed and borrower names.
+/// - [historyInstallments]: installments of [historyContracts] inside the
+///   loaded window. Rows of contracts that are not in [historyContracts]
+///   (or that are active) are ignored, and ids are deduped. They add their
+///   effective due to the chart's due series and appear on the calendar
+///   (dots, day lists, legend) as settled rows.
+/// - [historyContracts]: closed / rolled-over contracts loaded for the
+///   dashboard. They add to totalNetDisbursed (unless already in
+///   [contractsById]) and contribute their cached cash
+///   (`totalPaid − rolloverSettled`) to totalCollected; their transactions
+///   in [allTransactions] still drive the dated figures (chart, calendar,
+///   today, this month) but are not counted in totalCollected again. Any
+///   id that is also an active projection is ignored. They also feed
+///   [PortfolioMetrics.excessToReview].
 PortfolioMetrics computePortfolio({
   required List<ContractProjection> projections,
   required List<LedgerTransaction> allTransactions,
   required CivilDate today,
   required Map<String, Contract> contractsById,
+  Iterable<Contract> historyContracts = const <Contract>[],
+  Iterable<Installment> historyInstallments = const <Installment>[],
 }) {
   final active = projections
       .where((ContractProjection p) => p.contract.isActive)
       .toList(growable: false);
+  final activeIds = <String>{for (final p in active) p.contract.id};
+  final history = <String, Contract>{
+    for (final c in historyContracts)
+      if (!activeIds.contains(c.id)) c.id: c,
+  };
 
   final typeById = <String, TxType>{
     for (final tx in allTransactions) tx.id: tx.type,
@@ -365,6 +709,11 @@ PortfolioMetrics computePortfolio({
   }
 
   var collected = 0;
+  for (final c in history.values) {
+    if (!contractsById.containsKey(c.id)) netDisbursed += c.netDisbursed.paise;
+    collected += c.totalPaid.paise - (c.rolloverSettled?.paise ?? 0);
+  }
+
   var receivedToday = 0;
   var collectedThisMonth = 0;
   var waived = 0;
@@ -376,7 +725,7 @@ PortfolioMetrics computePortfolio({
     }
     final cash = _cashDelta(tx, typeById);
     if (cash == 0) continue;
-    collected += cash;
+    if (!history.containsKey(tx.contractId)) collected += cash;
     if (tx.paidOn == today) receivedToday += cash;
     if (tx.paidOn.year == today.year && tx.paidOn.month == today.month) {
       collectedThisMonth += cash;
@@ -391,6 +740,7 @@ PortfolioMetrics computePortfolio({
   var upcoming30 = 0;
   final todayItems = <TodayDueItem>[];
   final overdueItems = <OverdueItem>[];
+  final excess = <ExcessItem>[];
 
   for (final p in active) {
     final contract = contractsById[p.contract.id] ?? p.contract;
@@ -398,39 +748,61 @@ PortfolioMetrics computePortfolio({
     overdue += p.overdueAmount.paise;
     overdueCount += p.overdueCount;
     if (p.maxDaysOverdue > maxDays) maxDays = p.maxDaysOverdue;
+    if (p.hasExcess) {
+      excess.add(
+        ExcessItem(
+          contractId: contract.id,
+          borrowerName: contract.borrowerName,
+          loanNo: contract.loanNo,
+          status: contract.status,
+          excess: p.excess,
+        ),
+      );
+    }
 
     for (final row in p.rows) {
       if (row.isRescheduledAway) continue;
       if (row.dueDate == today) {
         todayAmount += row.due.paise;
-        todayItems.add(
-          TodayDueItem(
-            contractId: contract.id,
-            borrowerName: contract.borrowerName,
-            loanNo: contract.loanNo,
-            seq: row.seq,
-            amount: row.due,
-            paid: row.paid,
-            isExtension: row.isExtension,
-          ),
-        );
+        todayItems.add(_item(p, row));
       }
       if (row.status == RowStatus.overdue) {
         overdueItems.add(
           OverdueItem(
             contractId: contract.id,
+            borrowerId: contract.borrowerId,
             borrowerName: contract.borrowerName,
+            borrowerPhoneE164: contract.borrowerPhoneE164,
             loanNo: contract.loanNo,
+            frequency: contract.frequency,
             seq: row.seq,
             dueDate: row.dueDate,
             amount: row.remaining,
             daysOverdue: row.daysOverdue,
           ),
         );
-      } else if (row.isOpen) {
+      } else if (row.isOpen && !row.isExtension) {
+        // Extension rows re-plan overdue money: counting them here would
+        // count the same rupees twice (overdue + upcoming).
         final ahead = today.daysBetween(row.dueDate);
         if (ahead >= 0 && ahead <= 30) upcoming30 += row.remaining.paise;
       }
+    }
+  }
+
+  for (final c in history.values) {
+    final pool = c.totalPaid.paise + c.totalWaived.paise;
+    final extra = pool - c.sanctioned.paise;
+    if (extra > 0) {
+      excess.add(
+        ExcessItem(
+          contractId: c.id,
+          borrowerName: c.borrowerName,
+          loanNo: c.loanNo,
+          status: c.status,
+          excess: Money(extra),
+        ),
+      );
     }
   }
 
@@ -442,11 +814,12 @@ PortfolioMetrics computePortfolio({
     final byContract = a.contractId.compareTo(b.contractId);
     return byContract != 0 ? byContract : a.seq.compareTo(b.seq);
   });
-  todayItems.sort((TodayDueItem a, TodayDueItem b) {
+  todayItems.sort(_compareRowIds);
+  excess.sort((ExcessItem a, ExcessItem b) {
+    final byAmount = b.excess.compareTo(a.excess);
+    if (byAmount != 0) return byAmount;
     final byLoan = a.loanNo.compareTo(b.loanNo);
-    if (byLoan != 0) return byLoan;
-    final byContract = a.contractId.compareTo(b.contractId);
-    return byContract != 0 ? byContract : a.seq.compareTo(b.seq);
+    return byLoan != 0 ? byLoan : a.contractId.compareTo(b.contractId);
   });
 
   final receivableMoney = Money(receivable);
@@ -478,6 +851,8 @@ PortfolioMetrics computePortfolio({
       overdue: share(overdue),
     ),
     overdueList: List<OverdueItem>.unmodifiable(overdueItems),
+    excessToReview: List<ExcessItem>.unmodifiable(excess),
+    historyRows: _historyItems(history, historyInstallments),
   );
 }
 

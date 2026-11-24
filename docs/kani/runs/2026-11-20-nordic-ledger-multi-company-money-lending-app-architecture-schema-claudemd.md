@@ -670,7 +670,7 @@ invites/{code}: get if signedIn; list if signedIn && owner(resource.data.company
 | 4 | 8 Companies & onboarding · 9 Members & invites | `kani-orchestrator:role-ui-team` | 3 | passed | A new user registers a company and becomes owner. The owner invites a collector via WhatsApp/SMS. The collector joins with the code, sees only that company, and switches companies. Revoke, role change and the last-owner guard work. |
 | 5 | 10 Borrowers · 11 Contracts (create, detail timeline, reschedule) | `kani-orchestrator:role-ui-team` | 4 | passed | An owner adds borrowers and creates contracts, including offline, with a correct net-disbursed figure and an auto-generated schedule. The owner views the timeline and reschedules an installment. Data syncs to the second device. |
 | 6 | 12 Payments, reversal & rollover · 12b Close-loan chip + early-closure waiver (added 2026-11-23) | `kani-orchestrator:role-ui-team` | 5 | passed | Full, partial and advance payments update the schedule. A partial or missed installment shows as overdue and auto-extends at the end. A contract closes at ₹0, including a one-tap "Close loan" and an owner-only early-closure waiver. An owner rolls over a contract with the correct net cash. Excess is flagged after a concurrent offline collection. |
-| 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | in-progress | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
+| 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | passed | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
 | 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7 | pending | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
 | 9 | 17 Release & Play readiness | `kani-orchestrator:role-ui-team` | 8 | pending | A signed release `.aab` builds with the launcher icon and splash, Google sign-in works in the release build, and the Play publishing checklist is ready for internal-testing upload. |
 
@@ -1825,6 +1825,231 @@ Sprint Test Summary: 29 passed, 2 failed (skipped; Bug 1 and Bug 2).
   - two-device offline excess;
   - the collector-device view;
   - the Sprint 5 Reschedule check on the daily loan.
+
+### Sprint 7
+**Sprint Goal:** The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work.
+
+**kani-orchestrator:role-ui-team — Task 13 Dashboard:**
+
+Files created/modified:
+- `lib/domain/ledger/portfolio_metrics.dart`:
+  - `DueRowItem` (borrower id/phone, frequency, status, daysOverdue, cyclesTotal, `remaining`); `TodayDueItem` is now a typedef of it.
+  - `TodayDue.collectedCount/pendingCount/progressBps` (capped 0–100%).
+  - `CollectionBucket.rateBps` and `SeriesTotals` (sum, rate, peak).
+  - `CalendarDay.settled/settledCount/pending/pendingCount` and the dot getters; `CalendarTotals`.
+  - `OverdueItem` gains `borrowerId`, `borrowerPhoneE164` and `frequency` (defaulted, so existing callers compile); `severityFor`.
+  - `ExcessItem` and `PortfolioMetrics.excessToReview`, `activeContractCount`, `overdueRiskBps`, `overdueLoanCount`, `dueItemsBetween` / `dayItems`.
+  - `chartWindowStart(today)` (1st of the month 11 months back).
+  - `computePortfolio(historyContracts:)`, an optional parameter (default empty, so earlier behaviour and tests are unchanged).
+- `lib/features/contracts/data/ledger_snapshot_repository.dart` — `watchHistoryContracts(cid)` (`status in [closed, rolledOver]`) and `watchHistoryTransactions(cid, since)` (`contractActive == false`, `paidOn >= since`, `orderBy paidOn desc`).
+- `lib/features/dashboard/application/portfolio_providers.dart` — `historyWindowStartProvider`, `historyContractsProvider`, `historyTransactionsProvider`, `portfolioProvider` (AsyncValue<PortfolioMetrics>), memoised `collectionsSeriesProvider(period)`, `calendarMonthProvider(y, m)`, `overdueLoansProvider`, `activeProjectionProvider(id)`.
+- `lib/features/dashboard/application/dashboard_filters.dart` — `DueTodayFilter`, `filterDueToday`, `wholePercent`, chart period labels.
+- `lib/features/dashboard/presentation/screens/dashboard_screen.dart` — the Dashboard (loading / error / data).
+- `lib/features/dashboard/presentation/screens/home_screen.dart` — Dashboard, Calendar and Borrowers wired; Settings stays a placeholder (Sprint 8). Owners get a "New loan" FAB in the expanded rail.
+- `lib/features/dashboard/presentation/contact_actions.dart` (`callBorrower`, `whatsAppBorrower` through the existing `ContactLauncher`) and `due_row_status.dart` (pill label / kind / icon, `daysLate`).
+- `lib/features/dashboard/presentation/widgets/` — `kpi_grid.dart`, `collections_chart.dart` (+ `niceAxisStep`), `receivable_breakdown_card.dart`, `today_due_card.dart`, `due_today_list.dart`, `due_row_card.dart` (shared with the calendar), `overdue_alert_card.dart`, `excess_review_card.dart`.
+- `lib/core/widgets/share_bar.dart` — thin bps bar on the track colour.
+- `lib/core/theme/app_theme.dart` — `AppColors.collectedSoft`, `chartDue`, `tooltip`; `AppSizes.chartHeight`, `chartDueBar`, `chartCollectedBar`, `chartAxisReserved`, `chartBottomReserved`, `chartGridLine`, `chartTooltipMaxWidth`, `chartMinLabelSlot`, `legendSwatch`, `chartTouchSlop`, `shareBarHeight`, `calendarCell`, `calendarDayBadge`, `alertBadge`; `AppInsets.tooltip`, `pageBody`.
+- `lib/core/time/civil_date.dart` — `civilMonthName`, `civilWeekdayShortName`.
+- Tests:
+  - `test/domain/ledger/dashboard_views_test.dart` (25): history, excess, calendar, today, series and overdue maths.
+  - `test/features/dashboard/dashboard_test_support.dart` and `dashboard_screen_test.dart` (17), at 400 and 1024, plus 1.3× text at 360 / 400 / 1024.
+  - `test/core/routing/onboarding_redirect_test.dart` — the placeholder text assertion replaced.
+
+Key decisions:
+- **Lifetime KPIs without aggregation queries:**
+  - The active listeners only hold active contracts, so the dashboard also listens to the company's closed and rolled-over contracts, plus inactive-contract transactions inside the 12-month chart window.
+  - Net disbursed adds the history contracts' `netDisbursed`.
+  - Total collected adds each history contract's cached cash, `totalPaid − rolloverSettled` (waivers never touch `totalPaid`). Their windowed transactions are not counted a second time, but they still feed the chart, the calendar, received-today and collected-this-month.
+  - Both queries are served by existing indexes: a single-field `in`, and (contractActive ASC, paidOn DESC).
+- **Excess to review (Sprint 6 carry-over): done.** `excessToReview` lists:
+  - active projections with excess;
+  - history contracts whose `totalPaid + totalWaived > sanctioned`.
+
+  The card shows the total and one row per loan, and a row opens the contract, where the owner reverses the duplicate. It is visible to all roles; only owners can reverse.
+- **Dedupe.** During a close or reopen, a document can sit in both listeners for a moment. Transactions are deduped by id (the active copy wins), and history contracts whose id is active are ignored in the domain.
+- **Chart:**
+  - one y-axis in short ₹, with "nice" steps (1 / 2 / 2.5 / 5 × 10ⁿ, minimum ₹1k);
+  - due is the neutral `#E5E7EB` rod, collected the sage rod inside it (`groupVertically`); the current period uses `collectedSoft`;
+  - 4dp rounded tops, 1dp track gridlines, 12sp tabular labels, every other x label when bars are narrower than 52dp;
+  - the tooltip shows "{label} week · Due · Collected (n%)", with ±12dp touch slop;
+  - 12M is offered on medium and expanded windows only;
+  - the semantics label lists every bucket plus the summary line.
+
+  Negative net-collected periods draw as 0, but the tooltip shows the true value.
+- **Receivable breakdown:** three separate labelled rows (sage dot, amber dot, terracotta warning icon), each with ₹, % and a 6dp bar. There is never a stacked bar.
+- **Layout:**
+  - compact: KPI 2×2, then the overdue alert, excess, chart, breakdown, today card and due list;
+  - expanded: KPI 4-up, chart (8) | breakdown (4), due list (8) | today card + alert + excess (4).
+
+  It uses `WindowSize.of` / `tileColumns` (the breakpoint API), not raw MediaQuery maths. "New loan" sits in the header on compact and medium, and in the rail FAB on expanded (owner only).
+- **Due today:** the All / Pending / Collected chips show counts. Open rows have Record (`/contracts/{id}/pay`) and Call; collected rows show a "Collected" pill with no actions. Received today counts net cash for the day, including payments for other rows, so the progress bar is capped at 100%.
+
+Known limitations:
+- `firestore.rules` and `firestore.indexes.json` are **unchanged**, so no deploy is needed. The new queries use the existing (contractActive, paidOn DESC) index, and the contracts `in` query needs no composite index.
+- History contracts are listened to in full, which grows with the book. That is fine at the target scale; materialised summaries remain the Blaze-plan route.
+- Inactive-contract transactions older than the 12-month window are not loaded. Lifetime collected still covers them through the contract cache, but calendar navigation stops at the window start.
+- The chart tooltip is drawn on the canvas, so the widget test only checks that a tap doesn't throw; the content was not asserted. The deep link `/dashboard?tab=today` is Sprint 8.
+
+Verification: see the end of Task 14.
+
+**kani-orchestrator:role-ui-team — Task 14 Calendar & Overdue tracker:**
+
+Files created/modified:
+- `lib/domain/ledger/overdue_tracker.dart` (exported from `ledger.dart`) — `OverdueFilter`, `OverdueLoan`, `groupOverdueByLoan`, `matchesOverdueFilter`, `OverdueSummary.of`.
+- `lib/features/calendar/presentation/screens/calendar_screen.dart` — month navigation (back to `chartWindowStart`, forward 12 months), the Month / List toggle, and a grid | day-list split on expanded via `ListDetailLayout`.
+- `lib/features/calendar/presentation/widgets/` — `month_grid.dart` (Monday-first, 48dp+ cells, sage / amber / terracotta dots, navy selected circle, outlined today, a spoken summary per cell), `calendar_legend.dart` (Collected / Pending / Overdue chips with the month totals), `day_agenda.dart` (day header with "N collections · ₹X", then `DueRowCard`s).
+- `lib/features/overdue/presentation/screens/overdue_screen.dart` — `/overdue`: the totals, All / Critical >3 days / Recent 1–3 days chips with counts, and loan cards. Compact taps open the loan; expanded shows a 40/60 detail pane.
+- `lib/features/overdue/presentation/widgets/` — `overdue_summary_cards.dart` (Total overdue + Collection risk %), `overdue_loan_card.dart`, `overdue_actions.dart` (Call / WhatsApp / Record ₹X), `overdue_detail_pane.dart` (missed installments + "Open loan schedule").
+- `lib/core/routing/app_router.dart` — `AppRoutes.overdue` (`/overdue`, inside the company shell) and its route.
+- Tests: `test/features/calendar/calendar_screen_test.dart` (9) and `test/features/overdue/overdue_screen_test.dart` (9), each at compact and expanded widths and at 1.3× text.
+
+Key decisions:
+- **The calendar is row based, so the dots, list and legend agree:**
+  - sage = some amount paid on rows due that day (FIFO);
+  - amber = open rows not yet late (due today / upcoming / planned);
+  - terracotta = overdue rows.
+
+  A partial row counts its paid part as collected and the rest as pending or overdue. Extension rows are included, and rows rescheduled away are excluded. Cash-by-paidOn stays in `CalendarDay.collected` for the dashboard figures.
+- **The day list order** is open rows before paid ones, then loanNo, contractId and seq. List mode groups the month's rows by date. On tablets, tapping a date header selects that day in the detail pane.
+- **The overdue tracker groups per loan.** It shows one card per contract: Σ shortfall, the highest delay, the oldest scheduled date and the installment count. The severity (critical > 3 days) uses the loan's highest delay. Collection risk = total overdue ÷ sanctioned receivable (one decimal).
+- **Actions reuse the Sprint 5 / 6 interfaces:**
+  - Call → `ContactLauncher.call` (`tel:`);
+  - WhatsApp → `ContactLauncher.whatsApp`, with the existing polite `ReminderMessage` naming the loan's earliest open installment ("₹5,000 for Loan #05 was due on 31 Oct 2023");
+  - Record → `/contracts/{id}/pay` (`RecordPaymentSheet`).
+
+  `InviteShareService` was not needed; `ContactLauncher` already wraps `wa.me` / `tel:`.
+- The Stitch overdue mock's "Broadcast reminders / Send batch payment links (UPI QR)" block was **not** built. It is borrower SMS / UPI-link copy of the kind CLAUDE.md lists as mock errors, and it isn't in the requirements.
+
+Known limitations:
+- `/overdue` is a pushed full screen (no nav rail), reached from the dashboard alert, the overdue KPI and the breakdown link. The notification payload wiring is Sprint 8.
+- The expanded overdue detail pane shows the loan's missed installments and actions, not the full contract timeline. "Open loan schedule" pushes `/contracts/{id}`, because the contract screen has its own two-pane layout.
+- The `tel:` / `wa.me` hand-offs were not exercised on a device (the launcher URIs are asserted in widget tests).
+
+Verification: `dart run build_runner build --delete-conflicting-outputs` ok; `flutter analyze` No issues found; `flutter test` 858/858 (was 798, +60); `cd firebase && npm test` not run (rules untouched, baseline 405); `flutter build apk --debug --target-platform android-x64` built `build/app/outputs/flutter-apk/app-debug.apk`. New ledger maths has 100% line coverage (`portfolio_metrics.dart`, `overdue_tracker.dart`) in `flutter test --coverage test/domain`. Not deployed, not committed, not installed.
+
+
+**Module Lead — Sprint 7 Review (attempt 1):**
+Date: 2026-11-23
+
+- Re-ran independently: `flutter analyze` is clean and `flutter test` passes 858/858. Rules and indexes are unchanged, and both new listeners are allowed by `allow read: if member(cid)`. They are served by existing or single-field indexes.
+- **Verified correct:**
+  - lifetime Total collected, with no double count at the active / history boundary;
+  - waiver, rollover and reversal cash handling;
+  - lifetime net disbursed;
+  - the excess-to-review condition;
+  - calendar dot and day-list consistency;
+  - IST week and month boundaries;
+  - the overdue fold and its Critical / Recent filters;
+  - chart rules, tokens, adaptive layouts, role gating and the Stitch mock-error exclusions.
+- **M1 (Major):** the receivable breakdown `upcoming30` includes extension rows, which double counts overdue money (`portfolio_metrics.dart:694-697`). In the probe the rows summed to 166% of receivable. Fix: skip `row.isExtension`.
+- **M2 (Major):**
+  - The problem: past chart buckets lose the *due* of closed or rolled-over loans but keep their *collected*, so the rate can go above 100% (`portfolio_metrics.dart:461-473`).
+  - The fix: add a `watchHistoryInstallments(cid, since)` listener (contractActive == false, dueDate >= since; existing index) and add its `amountDue − rescheduledOut` into the buckets by `dueDate`.
+- **m1:** the calendar legend "Pending" includes extension rows (`:513-521`). Keep the dot, but leave them out of the total.
+- **m2:** extension rows show only "Added"; the AC needs "Added · missed/partial on {date}" (`due_row_card.dart:31`).
+- **m3:** `StatusPill` labels are not tabular (`status_pill.dart:74`). Add `labelMdStrongTabular`.
+- **m4:** the Record button uses the short form "₹5.3k" (`overdue_actions.dart:64`). Use `formatInr`.
+- **m5:** `portfolioProvider` drops back to loading on a listener reload (`portfolio_providers.dart:62-70`). Gate on `!hasValue`.
+- **n1 (optional):** memoise `dayItems` / `dueItemsBetween`.
+- **Verdict: CHANGES REQUESTED** (M1, M2, m1–m5).
+
+**Tester — Sprint 7 Results (attempt 1):**
+
+New tests (test only):
+- `test/domain/ledger/tester/s7_dashboard_metrics_test.dart` (17 + 2 skip)
+- `test/features/dashboard/tester/s7_tester_support.dart`
+- `s7_dashboard_test.dart` (14)
+- `test/features/calendar/tester/s7_calendar_test.dart` (10 + 1 skip)
+- `test/features/overdue/tester/s7_overdue_test.dart` (7)
+
+45 cases covered:
+- **KPIs:** lifetime collected across active, closed, rolledOver and waiver loans with no double count; net disbursed; reversals.
+- **Chart:** 8W / 6M / 12M IST boundaries, including a leap February.
+- **Breakdown, Due Today and filters.**
+- **Calendar:** dots, legend = list, toggle, navigation and empty states.
+- **Overdue tracker:** grouping, Critical / Recent, Call / WhatsApp / Record, tablet split.
+- **Excess:** duplicate, waiver, late rollover and active cases.
+- **Roles and layout:** 360 at 1.3× text and 1024, with no overflow.
+
+Full run: `flutter analyze` is clean; `flutter test` gives 906 passed + 3 skipped.
+
+Bugs Found:
+- **Bug 1 (= ML M2):** the chart's Due leaves out closed and rolled-over loans' installments while Collected keeps their cash, so the 8-week rate showed 128% / 217%.
+- **Bug 2 (= ML M1 / m1):** "Upcoming 30 days" (and the calendar Pending total) include extension rows; 142% of receivable.
+- **Bug 3 (low):** closed and rolled-over loans vanish from past calendar months, with no dots, no rows and legend Collected ₹0.
+
+Observations:
+- collectors see Excess to review with owner-only "reverse" copy;
+- short-form money in the calendar legend chips ("₹60k") and on the Record button ("₹5k").
+
+Human verification (on device):
+- the tel: and wa.me hand-offs;
+- the chart tooltip;
+- no KPI flicker while a loan closes, online and offline;
+- 1.3× text on a 360dp phone;
+- the tablet rail FAB.
+
+Sprint Test Summary: 48 passed, 3 failed (skipped; Bugs 1–3).
+
+**Fixes for Module Lead + Tester findings (Sprint 7, attempt 2):**
+- **M1 / Bug 2:** "Upcoming next 30 days" now skips extension rows (`row.isExtension`), so overdue + upcoming30 ≤ receivable.
+- **m1:** the calendar Pending total skips extension rows. Those rows still add to `pendingCount` (the amber dot) and stay in the day / month lists.
+- **M2 / Bugs 1 and 3:**
+  - New listener `watchHistoryInstallments(cid, since)`: `contractActive == false`, `dueDate >= since`, `orderBy dueDate`. It is served by the existing (contractActive ASC, dueDate ASC) index and allowed by the member read rule.
+  - New `historyInstallmentsProvider`, passed as `computePortfolio(historyInstallments:)`.
+  - In the domain, only installments of non-active history contracts are kept (active wins), deduped by id. Rows with an effective due (`amountDue − rescheduledOut`) of 0 are dropped.
+  - **Chart:** each history row adds its effective due to its bucket by `dueDate`, so a loan closed in the window no longer pushes the rate above 100%.
+  - **Calendar:** history rows are settled rows, with a sage dot and counted in the legend's Collected total.
+    - Closed and waiver-closed loans were paid to zero; a rolled-over loan's unpaid rows were settled by the rollover.
+    - Day and month lists show them as paid `DueRowItem`s (`contractStatus` set, `isHistory`) with no Record or Call.
+    - A rolled-over loan's rows read "Settled by rollover".
+- **m2:** `DueRowItem.sourceLabel` carries `ProjectedRow.sourceLabel`. Extension cards read "Added · missed on 31 Oct (Inst. 2)" (or "partial on …").
+- **m3:** new `AppTextStyles.labelMdStrongTabular` (also in `tabularStyles`), used by `StatusPill`.
+- **m4 / Tester observation:** the overdue Record button ("Record ₹5,000") and the calendar legend chips now use the full `formatInr` form. The legend amount is `Flexible` so long amounts can't overflow. Short form remains only on chart axes.
+- **m5:** `portfolioProvider` no longer drops back to loading on a reload.
+  - A per-company `PortfolioHolder` (`portfolioHolderProvider`, reset when the active company changes) keeps the last figures.
+  - While any input is loading or valueless, the provider returns the held figures. It shows a loading state only before the first figures for the company (including right after a switch, so a stale value never crosses companies).
+  - Errors still surface.
+- **Collector copy:** `ExcessReviewCard(isOwner:)`. Collectors still see the card, with "Ask an owner to review and reverse the duplicate payment."; owners keep "Open the loan to review and reverse the duplicate payment."
+- **n1:** new `dueItemsProvider(from, to)` (memoised family), used by the calendar's day and month lists. The unused `activeProjectionProvider` was removed.
+- **Tests:**
+  - Un-skipped and renamed (no "BUG" prefix):
+    - "Due includes rows of loans closed in the window, so the rate stays within 100%" (now passes `historyInstallments: scheduleFor(closed)`);
+    - "Upcoming next 30 days leaves out the auto-extension rows of overdue money";
+    - "S7-C10 a closed / rolled-over loan stays on past months" (legend now `₹30,000`).
+  - Expectations updated where the fixes legitimately change a figure:
+    - dashboard 8W summary: 128% → "100% · ₹45,000 of ₹45,000";
+    - 6M summary: "40% · ₹45,000 of ₹1,10,000";
+    - `portfolio_metrics_test` upcoming30: ₹91,000 → ₹90,000 (7826 bps);
+    - S7-C1 / S7-C2 October: the closed c7 and rolled-over c8 rows now appear, so 24 Oct shows ₹20,000, the legend collected ₹45,000, and the day lists 3 / 4 collections;
+    - the S7 legend-equals-lists check skips extensions in Pending;
+    - short-form amounts changed to the full form.
+  - New tests:
+    - `dashboard_views_test.dart` +3: overdue + upcoming30 ≤ receivable with an extension inside 30 days (plus the calendar dot / Pending / source label); a history loan in the window keeps the bucket rate ≤ 100%; history rows on the calendar (settled totals, ordering, `isHistory`, rolled-over status, id dedupe, active wins, effective-due-0 and unknown-contract rows ignored).
+    - `test/features/dashboard/portfolio_provider_test.dart` (2): a reload keeps the figures, a company switch goes to loading, and an error surfaces.
+    - `dashboard_screen_test.dart` +3: excess copy for owner and for collector, and the "Added · missed on 31 Oct (Inst. 2)" card.
+- **Verification:**
+  - `dart run build_runner build --delete-conflicting-outputs` ok;
+  - `flutter analyze` No issues found;
+  - `flutter test` 917/917 with 0 skipped (was 906 + 3 skipped);
+  - new ledger maths at 100% line coverage (`portfolio_metrics.dart`, `overdue_tracker.dart`);
+  - `flutter build apk --debug --target-platform android-x64` built `build/app/outputs/flutter-apk/app-debug.apk`.
+- `firestore.rules` and `firestore.indexes.json` are unchanged, so no deploy is needed; the rules suite was not re-run. Not committed, not deployed, not installed.
+
+**Independent re-run by the orchestrator (attempt 2):** `flutter analyze` is clean and `flutter test` passes 917/917, with 0 skipped. Every tracked change is in Sprint 7 scope.
+
+**Human verification (2026-11-24): PASSED.**
+- The user tested on the emulator with two loans:
+  - an active daily loan, ₹1,00,000 sanctioned, ₹90,000 net;
+  - a closed loan, ₹1,00,000 sanctioned with ₹7,000 upfront, ₹93,000 net.
+- The user questioned Net disbursed showing ₹1,83,000. It was explained as the lifetime Σ net disbursed (as specified in Section 1 and Sprint 2 decision #4). The user accepted it ("looks good"), and the tile is unchanged.
+- The emulator data partition was enlarged to 8 GB, which wiped it, and the user signed in again.
+- Carried forward:
+  - the tel: and wa.me hand-offs;
+  - the chart tooltip;
+  - the 1.3× text check on a real phone;
+  - the Sprint 6 carry-forward items.
 
 ---
 

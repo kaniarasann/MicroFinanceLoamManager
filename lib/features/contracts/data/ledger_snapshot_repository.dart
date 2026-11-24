@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../core/firebase/converters.dart';
+import '../../../core/time/civil_date.dart';
 import '../../../domain/models/models.dart';
 
 /// Read side of the ledger, shared by Borrowers, Contracts, Dashboard,
@@ -48,6 +49,45 @@ class LedgerSnapshotRepository {
   Stream<List<LedgerTransaction>> watchActiveTransactions(String cid) => _refs
       .transactions(cid)
       .where('contractActive', isEqualTo: true)
+      .snapshots()
+      .map(_docs);
+
+  // ------------------------------------------------------ dashboard history
+
+  /// The company's closed and rolled-over contracts (single-field `in`
+  /// query, no composite index). Feeds lifetime net disbursed / collected
+  /// and the "Excess to review" indicator.
+  Stream<List<Contract>> watchHistoryContracts(String cid) => _refs
+      .contracts(cid)
+      .where('status', whereIn: historyStatuses)
+      .snapshots()
+      .map(_docs);
+
+  /// Transactions of inactive contracts with `paidOn >= since` (the chart
+  /// window). Served by the existing (contractActive ASC, paidOn DESC)
+  /// index.
+  Stream<List<LedgerTransaction>> watchHistoryTransactions(
+    String cid,
+    CivilDate since,
+  ) => _refs
+      .transactions(cid)
+      .where('contractActive', isEqualTo: false)
+      .where('paidOn', isGreaterThanOrEqualTo: since.toString())
+      .orderBy('paidOn', descending: true)
+      .snapshots()
+      .map(_docs);
+
+  /// Installments of inactive contracts with `dueDate >= since` (the
+  /// chart window). Served by the existing (contractActive ASC, dueDate
+  /// ASC) index.
+  Stream<List<Installment>> watchHistoryInstallments(
+    String cid,
+    CivilDate since,
+  ) => _refs
+      .installments(cid)
+      .where('contractActive', isEqualTo: false)
+      .where('dueDate', isGreaterThanOrEqualTo: since.toString())
+      .orderBy('dueDate')
       .snapshots()
       .map(_docs);
 
