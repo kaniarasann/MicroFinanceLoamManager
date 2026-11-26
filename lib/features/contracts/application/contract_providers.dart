@@ -242,6 +242,56 @@ class ContractActions {
         );
   }
 
+  /// Owner only: onboard an existing loan with its original dates and the
+  /// past payments (itemised, or an opening total already spread with
+  /// `spreadOpeningTotal`). "Today" is `todayProvider`'s IST date.
+  Future<LedgerWriteResult> onboard({
+    required Borrower borrower,
+    required Money sanctioned,
+    required UpfrontMode upfrontMode,
+    required int upfrontInput,
+    required Money installmentAmount,
+    required Frequency frequency,
+    required CivilDate disbursedOn,
+    required CivilDate firstDueDate,
+    required List<PastPaymentInput> pastPayments,
+    int? preferredWeekday,
+    int? preferredMonthDay,
+    String? previousRef,
+    String? guarantor,
+    String? notes,
+    String? purpose,
+  }) async {
+    final actor = await _actor();
+    final company = _ref.read(activeCompanyProvider).value;
+    return _ref
+        .read(contractRepositoryProvider)
+        .onboardContract(
+          OnboardContractCommand(
+            cid: _cid,
+            borrower: borrower,
+            sanctioned: sanctioned,
+            upfrontMode: upfrontMode,
+            upfrontInput: upfrontInput,
+            installmentAmount: installmentAmount,
+            frequency: frequency,
+            preferredWeekday: preferredWeekday,
+            preferredMonthDay: preferredMonthDay,
+            firstDueDate: firstDueDate,
+            disbursedOn: disbursedOn,
+            cachedNextLoanNo: company?.nextLoanNo ?? 0,
+            actor: actor,
+            role: _ref.read(currentRoleProvider),
+            today: _ref.read(todayProvider),
+            pastPayments: pastPayments,
+            previousRef: previousRef,
+            guarantor: guarantor,
+            notes: notes,
+            purpose: purpose,
+          ),
+        );
+  }
+
   Future<LedgerWriteResult> reschedule({
     required ContractView view,
     required ProjectedRow row,

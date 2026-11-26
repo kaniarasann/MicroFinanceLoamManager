@@ -295,6 +295,139 @@ Out of scope:
 - **Scope size:** this is a full app, so the Scrum Master will need several sprints.
 - **Stitch mocks** contain decorative elements (scores, UTR verification, hashing copy) that are out of scope. The UI team must omit them rather than fake them.
 
+### Addendum 2026-11-24: Onboard an existing loan
+> Filled by: Business Analyst (feature request from the user, 2026-11-24)
+
+**Knowledge Sources Consulted:**
+- `docs/kani/knowledge/KNOWLEDGE_BASE.md`: no completed runs indexed yet (marker only).
+- `README.md`: Flutter template text, nothing relevant.
+- This living doc: Section 0, Section 1 (contract, payment, overdue, auto-extension, waiver and dashboard criteria), Section 2 (schema, rules outline, write paths), Section 3 and the Section 4 logs of Sprints 5–7.
+- `CLAUDE.md` (project rules).
+- Code: `lib/features/contracts/` (`create_contract_screen.dart`, `loan_terms_controller.dart`, `loan_schedule_fields.dart`, `date_field.dart`, `contract_draft.dart`, `contract_repository.dart`), `lib/features/payments/` (`payment_repository.dart`, `payment_providers.dart`, `record_payment_sheet.dart`), `lib/domain/ledger/` (`validators.dart`, `schedule_generator.dart`, `contract_projection.dart`, `portfolio_metrics.dart`), `lib/core/firebase/chunked_batch.dart`, `firebase/firestore.rules`, and the borrower profile "New loan" action.
+
+**Request Summary:**
+A lender moving to Nordic Ledger already has loans running on paper or in another system. Many of them are part-way through repayment. The owner needs a screen to **onboard an existing, in-progress loan**: enter the original terms and dates plus what the borrower has already paid. The app then shows that loan exactly as if it had been run in the app from day one: what is paid, partly paid and overdue today, and what is still to come. Without this, a lender cannot move their existing book into the app, and the dashboard would show only part of the business.
+
+**Where backdating is blocked today (verified in code, 2026-11-24):**
+- **UI (the only real block for contracts).**
+  - `LoanTermsController.draft()` always sets `disbursedOn: today`. The form has no disbursement-date field.
+  - The "First collection date" `DateField` in `loan_schedule_fields.dart` is limited to `first: today`, `last: today + 366`.
+  - The rollover screen reuses the same controller, so it has the same limits.
+- **UI (payments).** The Record Payment date picker allows `today − maxBackdateDays` (30, in `payment_providers.dart`) up to today. No future dates are allowed.
+- **Domain validators.** `validateContractTerms` checks only `firstDueDate ≥ disbursedOn`. It has no check against today in either direction. `validatePaymentAmount` does not look at dates at all. `validateReschedule` blocks a new date before today; that rule is unrelated to this feature.
+- **Repositories.** `createContract` and `recordPayment` pass the command's dates through unchanged. Reversals and reschedule audits are dated `today`.
+- **Firestore rules.** Contract create checks only that `firstDueDate` and `disbursedOn` are `yyyy-MM-dd` strings, and that `totalPaidPaise == 0`. Transaction create checks only that `paidOn` is a `yyyy-MM-dd` string. **The rules have no date window.** A past or future `disbursedOn`, `firstDueDate` or `paidOn` is accepted today. The only server-side obstacle to onboarding is `totalPaidPaise == 0` on contract create.
+
+**User decisions (fixed; not to be changed downstream):**
+1. **How past payments are entered: BOTH.**
+   - **Opening total (quick):** one "Already collected ₹X" figure.
+   - **Itemised (optional, detailed):** a list of individual past payments, each with a date, an amount and a mode (UPI / Cash / Bank).
+2. **Past cash counts everywhere**, as real payments on their dates: Total collected, the collections chart, the calendar, collected this month and the borrower's receipts and Collected tile.
+3. **Shortfall is shown as overdue**, like any loan. Unpaid past installments show as Overdue with days late, and they auto-extend at the end through the existing projection. There is no special roll-forward.
+4. **Owner only**, enforced in the UI and in `firestore.rules`.
+
+**BA decision: the date of an opening total (recommendation, pending user confirmation; see open question 1).**
+- **Option A: one payment dated on the onboarding day (today).** This creates a one-day spike:
+  - Received today, the "Today's due" progress, collected this month and the current chart bar all jump by the whole historic amount. For example, ₹60,000 shows as "received today" when nothing was collected today.
+  - Past chart periods show that loan's installments as *due* with ₹0 collected, so past collection rates look poor. The current period can go far above 100%.
+  - The daily digest and any handover reconciliation for today would be wrong.
+- **Option B (recommended): spread across the covered installments' due dates.** The opening total is allocated oldest-first over the schedule rows due on or before today. Each covered row gets one payment dated on its due date, for its amount; the last covered row may be partial.
+  - Any amount beyond the dues up to today is an advance. It is dated on the latest of (disbursedOn, last past due date), so it never lands on today.
+  - The chart, calendar and monthly figures then look as they would have if the loan had been run in the app. Received today is untouched.
+  - **Cost:** the spread payments are reconstructed dates, not dates the lender actually recorded. They are labelled "Opening balance" in the contract ledger and receipts so nobody mistakes them for real collections. A daily loan can produce hundreds of payment docs. The Tech Lead handles that with chunking.
+- If the lender knows the real dates, they use the itemised mode, which records exactly what they enter.
+
+**Stakeholder Impact:**
+- **Owner:** can bring the existing book into the app, loan by loan, offline, and sees an "as of today" preview before saving. Onboarding mistakes are corrected with the existing owner reversal.
+- **Collector:** cannot onboard (the screen and entry points are hidden, and the rules deny it). After sync, collectors see onboarded loans like any other loan: due today, overdue and calendar. They can record new payments on them.
+- **Dashboard and reports:** Total net disbursed rises by the onboarded loan's net cash. Total collected, the chart, the calendar and collected-this-month include the historic cash on its dates. Sanctioned receivable and Total overdue include the loan's balance and its overdue shortfall.
+- **Notifications:** an onboarded loan with past shortfall triggers the overdue nudge from the next scheduling run.
+- **Borrowers (not app users):** their outstanding balance and overdue days match the paper record, provided the owner enters it correctly.
+
+**Acceptance Criteria:**
+
+*Entry and access*
+- [ ] An owner can start "Onboard existing loan" from two places:
+  - the New loan screen, through a "New loan · Existing loan" toggle at the top;
+  - the borrower profile, through an "Existing loan" action beside "+ New loan".
+  
+  Both open the same onboarding screen, preselecting the borrower when started from the profile.
+- [ ] A collector never sees either entry point. Opening the onboarding route directly as a collector shows "Only owners can onboard loans." and leaves the screen. Firestore rules deny a collector creating an onboarded contract or an onboarding payment (verified by rules tests).
+
+*Original terms and dates*
+- [ ] The screen captures the same terms as a new loan: borrower, sanctioned amount, upfront interest (flat ₹ or %), frequency, installment amount and preferred weekday or month day. It also captures an optional previous reference number (the paper or old-system loan number), guarantor, purpose and notes. Net cash handover and effective % update live as on the New loan screen.
+- [ ] **Disbursed on** is a required date from **today − 3 years to today**. Future dates cannot be picked.
+- [ ] **First collection date** is a required date from **disbursedOn to disbursedOn + 366 days**. It may be in the past, today or the future.
+- [ ] The full base schedule is generated from the original first collection date with the existing rules: tenor, remainder on the last row, month-end clamping and the 366-installment limit. Some or all rows may fall in the past.
+
+*Past payments*
+- [ ] A "Collected so far" section has a segmented control: **Opening total** (default) and **Itemised payments**. Either mode may be left at ₹0, which onboards a backdated loan with nothing collected.
+- [ ] **Opening total mode:** one ₹ amount and one payment mode (default Cash). A helper line explains how it will be dated, for example "Spread across 7 installments due up to today", per the confirmed option for open question 1.
+- [ ] **Itemised mode:** the owner adds, edits and removes payment rows (date, amount, mode, optional reference). Rows are listed newest first with a running total.
+  - A **"Fill from schedule"** helper pre-fills one row per installment due up to a chosen date, at its due date and amount. The owner then edits the rows.
+  - At most 1,100 rows are allowed.
+- [ ] **Validation, blocking save with an inline message:**
+  - every amount > ₹0;
+  - every payment date within **[disbursedOn, today]**, so no future dates and nothing before disbursement;
+  - total collected **< sanctioned** (see open question 2 for the fully repaid case);
+  - Disbursed on and First collection date within the limits above;
+  - all existing new-loan term validations.
+- [ ] Past payments are stored as ordinary, immutable `payment` transactions with their past dates, marked as recorded at onboarding. The contract's running paid total starts at the total collected. Paid, partial and overdue rows are derived by the existing FIFO projection and are never stored.
+
+*"As of today" preview*
+- [ ] Before saving, the screen shows a live preview computed by the same projection the app uses after saving:
+  - tiles for Collected, Outstanding and Overdue (₹, number of installments, highest days late);
+  - the schedule timeline with paid, partially paid, overdue (with "N days late"), due today, upcoming and auto-extension ("Added") rows;
+  - the maturity date and cycles n/N.
+  
+  The preview matches what the contract detail shows after saving, to the paisa.
+- [ ] The save button reads **"Onboard loan"** with a summary line ("Outstanding ₹X · N overdue"). Saving **works offline** and confirms with "Saved · will sync". After saving, the app opens the contract detail.
+
+*After onboarding*
+- [ ] The contract detail and borrower profile show an "Onboarded {date}" marker and the previous reference, if one was given. Onboarding payments are labelled "Recorded at onboarding" (itemised) or "Opening balance" (opening total) in the ledger and recent receipts. The receipt-share action is not offered for them.
+- [ ] Unpaid past installments show as Overdue with days late, in the Overdue tracker, Total overdue, the calendar and the overdue nudge. The shortfall auto-extends at the end, exactly like a loan created in the app.
+- [ ] The onboarding payments count as cash on their own dates in Total collected, the collections chart (8W / 6M / 12M), the calendar, collected this month and the borrower's Collected tile. They do **not** add to "Received today" unless a payment is actually dated today.
+- [ ] Total net disbursed includes the onboarded loan's net cash. Its disbursement is dated on the original Disbursed on date.
+- [ ] New payments, reschedules, rollover, the close-loan chip and the early-closure waiver work on an onboarded loan exactly as on any other loan.
+- [ ] An owner can reverse any single onboarding payment with the existing reversal (reason required). The reversal is dated on the original payment's date, so history is corrected in place and today's figures do not go negative. An owner can also reverse a whole opening total in one action ("Reverse opening balance").
+- [ ] Every document written stamps `recordedBy`, `recordedByName`, `recordedAt` and `clientRecordedAt`. Every amount and date renders with tabular figures and ₹ Indian grouping. The screen follows the Nordic Ledger tokens and adaptive layout rules on phone and tablet, and survives text scale 1.3×.
+
+**Scope:**
+
+In scope:
+- One onboarding screen, two owner entry points, a past-payments section with both modes, the "as of today" preview, and the offline write path.
+- Labels and markers on the contract detail, the ledger and receipts.
+- Reversal dating for onboarding payments, and the bulk opening-balance reversal.
+- Rules and rules tests, plus domain and widget tests.
+
+Out of scope:
+- Bulk import from a spreadsheet or CSV. Onboarding is one loan at a time.
+- Onboarding a loan that is already fully repaid or closed (see open question 2), and onboarding a past waiver, rollover or reschedule. A past reschedule is entered by choosing the schedule that is actually in force.
+- Editing an onboarded loan's terms after saving. As with any loan, corrections are reversals.
+- Cancelling or deleting an onboarded contract. No hard deletes; see open question 4.
+- Late fees or interest beyond the upfront deduction (unchanged).
+
+**Risks & Dependencies:**
+- **Data-entry errors** are the main business risk. A wrong first date or total makes a borrower look overdue when they are not. Mitigations: the preview is shown before saving, payments can be reversed, and there is an onboarded marker for audits.
+- **Write size:** a daily loan can have up to 366 installments plus hundreds of past payments, which is more than one Firestore batch. The write must stay consistent if it is split. This is for the Tech Lead.
+- **History window:** the dashboard and calendar load closed-loan history for 12 months only. Past payments of an **active** onboarded loan are all loaded and counted in Total collected. The chart and calendar show only the last 12 months, so older onboarding payments appear only in the contract ledger.
+- **Trusted devices:** as elsewhere, rules can check role, dates and bounds, but not that the payment amounts add up to the contract total.
+- **Depends on** Sprints 5–7 (create contract, payments and reversal, dashboard and calendar). All are passed.
+
+**Open questions for the user** (each with the BA recommendation):
+1. **Date of an opening total:** (A) one payment dated on the onboarding day, which spikes Received today, this month and the current chart bar; or (B) spread across the covered installments' due dates? **Recommend B.** It keeps today's figures and past collection rates truthful, and it is labelled "Opening balance".
+2. **Fully repaid loans:** if the past payments equal the sanctioned amount, should the app block the save, or onboard the loan and close it immediately (for borrower history and lifetime figures)? **Recommend blocking in this sprint** ("This loan is already fully repaid"). The goal is moving *active* loans, and closing on create adds a second write path. Importing closed loans can be a later request.
+3. **How far back:** is **3 years** for Disbursed on enough? **Recommend 3 years.** That covers any running daily, weekly or monthly loan within the 366-installment limit.
+4. **Undo a wrong onboarding:** today a mistaken onboarded loan can only be corrected by reversals, and it stays in the books. Should there be an owner "Cancel onboarded loan" (status `cancelled`, excluded from all totals, audit kept), for example within 7 days? **Recommend deferring** and relying on the preview plus reversals. Raise it as a follow-up if owners hit it in practice.
+5. **Upfront interest on old loans:** owners may not know the exact upfront figure. Is entering ₹0 acceptable when unknown? Net disbursed then equals sanctioned and inflates Total net disbursed. **Recommend allowing ₹0** with a helper line, "Enter what was deducted at disbursement; ₹0 if none".
+
+**User answers (2026-11-24), first approval gate: plan APPROVED, start Sprint 7b.**
+1. Opening total: **spread over the covered installments' due dates**, labelled "Opening balance".
+2. Fully repaid loans: **blocked for now**. Collected must be less than sanctioned.
+3. How far back: **3 years** (accepted as recommended).
+4. Undo a wrong onboarding: **deferred**. Corrections are made by reversals.
+5. Upfront ₹0 when unknown: **allowed**, with a helper note.
+
 ---
 
 ## 2. Technical Design
@@ -655,6 +788,299 @@ invites/{code}: get if signedIn; list if signedIn && owner(resource.data.company
 | 16 | Responsive pass + widget tests at compact/expanded for all shell screens; text-scale 1.3× check | `kani-orchestrator:role-ui-team` | Task 15 |
 | 17 | Release & Play readiness: launcher icon + native splash from brand mark, release signing via key.properties, release SHA in Firebase, targetSdk per Play requirement, `flutter build appbundle`, `docs/play-publishing-checklist.md` (bookkeeping positioning, Data Safety answers, account-deletion web URL, internal-testing upload) | `kani-orchestrator:role-ui-team` | Task 16 |
 
+### Addendum 2026-11-24: Onboard an existing loan (Technical Design)
+> Filled by: Tech Lead. Requirements: Section 1, "Addendum 2026-11-24: Onboard an existing loan".
+
+**Assumed answers to the open questions** (the design is built on these; changing them changes the noted tasks):
+- Q1: the opening total is **spread** across covered due dates (Task 18 `spreadOpeningTotal`).
+- Q2: **block** a fully repaid onboarding, so total collected < sanctioned (Tasks 18, 19).
+- Q3: **3 years** back (`maxOnboardBackdateDays = 1096`).
+- Q4: no cancel.
+- Q5: an upfront of ₹0 is allowed. Existing validation already permits it.
+
+If the user picks Q1 = A, `spreadOpeningTotal` is replaced by a single payment dated `onboardedOn`. Nothing else changes.
+
+**Tech Stack Detected:** unchanged (Flutter 3.41 / Dart 3.11, Riverpod code-gen, go_router, freezed, cloud_firestore with offline persistence, Node rules tests with `@firebase/rules-unit-testing` + vitest). No new packages.
+
+**Architecture Decision:**
+
+*1. The core idea: an onboarded loan is an ordinary contract plus ordinary past `payment` transactions, written by the owner in one logical write.* Nothing downstream needs a special case:
+- `contract_projection.dart` already FIFO-allocates every payment regardless of date. It marks rows `dueDate < today` and short as `overdue` with `daysOverdue`, and appends auto-extension rows rolled forward to today or later (`_extensionRows`). This holds even when the whole base schedule is in the past.
+- `schedule_generator.dart` accepts any `firstDueDate`; past dates are fine.
+- `portfolio_metrics.dart`:
+  - Net disbursed = Σ `contract.netDisbursed`. This is a lifetime figure, not windowed, so the disbursement's date has no effect on it.
+  - Collected, received-today, collected-this-month and the chart all key off `tx.paidOn` of cash transactions, so past payments land on their own dates automatically.
+  - The active-transactions listener (`contractActive == true`) has no date filter, so **every** past payment of an active onboarded loan is loaded and counted in Total collected. The chart and calendar show only the 12-month window (`chartWindowStart`), which is expected and documented.
+- `computePortfolio`, `contract_projection`, `borrower_summary`, `overdue_tracker` and the calendar need **no formula change**. Task 22 adds regression tests that prove it.
+
+*2. Where backdating is blocked today:* the UI only (see the Section 1 addendum). `LoanTermsController.draft()` hard-codes `disbursedOn: today`, the first-due `DateField` has `first: today`, and the pay sheet allows 30 days back. Validators and rules have no date window. The New loan and Rollover screens **keep** their current limits. Onboarding gets its own controller fields and limits, so no existing flow loosens.
+
+*3. Marking.*
+- Contract:
+  - `origin: 'standard' | 'onboarded'` (missing means `standard`, via `@Default` + `unknownEnumValue`). `new` is a reserved word in Dart, so the value is `standard`.
+  - `onboardedOn: 'yyyy-MM-dd'` (IST today at save).
+  - `previousRef: string?` (≤ 40 chars).
+- Every transaction written by onboarding (disbursement, payments) and every reversal of one carries `origin: 'onboarding'` (missing means `live`). Opening-total rows also carry `openingBalance: true`.
+- Onboarding payments **must carry a `mode`**. `_cashDelta` in `portfolio_metrics.dart:879` treats a reversal with an unknown original and no mode as a waiver reversal (not cash), so a mode-less onboarding payment reversed outside the window would be miscounted. The opening total therefore takes the mode chosen on the form (default `cash`). Rules enforce this (see the rules delta).
+
+*4. Dates and limits* (domain `onboarding.dart`, mirrored in rules with slack for the offline queue):
+
+| Field | Device rule (UI picker + validator) | Rules |
+|---|---|---|
+| `disbursedOn` | today − 1096 days … today | ≥ request.time − 1275 days (3 y + 180 d slack for a long offline queue); ≤ IST tomorrow (1-day clock-skew tolerance); ≤ `onboardedOn` |
+| `firstDueDate` | disbursedOn … disbursedOn + 366 | ≥ disbursedOn and ≤ disbursedOn + 366 d |
+| `onboardedOn` | = IST today (not editable) | ≤ IST tomorrow |
+| payment `paidOn` | disbursedOn … today | ≥ contract.disbursedOn, ≤ contract.onboardedOn, ≤ IST tomorrow |
+
+*5. Disbursement.* The disbursement tx is dated on the **original `disbursedOn`**, with amount = sanctioned − upfront and `origin: 'onboarding'`. Its effect on Net disbursed is the full net cash, because that KPI is lifetime Σ contract.netDisbursed. No chart or cash figure uses disbursement transactions (`_cashDelta` returns 0), so a past date moves nothing else.
+
+*6. Opening-total spread* (`spreadOpeningTotal`, pure):
+- Walk the base schedule rows with `dueDate ≤ today` in `(dueDate, seq)` order. Give each row `min(remaining, amountDue)` as one payment dated on that `dueDate`, until the total is used.
+- Any remainder (an advance beyond the dues up to today) is one more payment dated on `max(disbursedOn, last row dueDate ≤ today)`. If no row is due yet, it is dated on `disbursedOn`.
+- Every row gets `openingBalance: true`, the chosen mode, and `note: 'Opening balance'`.
+- Because FIFO allocation is date-agnostic, this produces exactly the same paid / partial / overdue projection as a single payment, but with truthful dated cash.
+
+*7. Write path: chunk-balanced batches (offline, no transactions).* Each chunk is a `WriteBatch`, and **each chunk balances itself**: the Σ of the payment amounts in a chunk equals the `totalPaidPaise` increment applied in that same chunk.
+- **Chunk 1 (always):**
+  - the contract;
+  - all N base installments (N ≤ 366);
+  - the disbursement tx;
+  - the company `nextLoanNo: increment(1)`;
+  - the first k past payments.
+  
+  This is 3 + N + k ≤ 450 ops (`maxOpsPerBatch`). The contract is written with a raw-map `set` whose `totalPaidPaise` is `FieldValue.increment(Σk)`. On a new doc this resolves to Σk, so the aggregate is **initialised via increment**, as CLAUDE.md requires. All other fields come from `Contract.toJson()`. `lastPaymentOn` is the latest `paidOn` overall.
+- **Chunks 2…m:** up to 449 payments + 1 contract `update {totalPaidPaise: increment(Σchunk), updatedAt}`.
+- **Bounds:** at most 1,100 payments and 366 installments, so at most 4 batches. A typical weekly or monthly loan is 1 batch.
+- **Commit:** all chunks are committed together, in order, exactly like `ChunkedBatch` (each lands in the offline cache immediately and queues in submission order). The call awaits the server ack with the existing `commitGrace` / `awaitServerAck`.
+- **Failure model:** a later chunk can only be rejected if chunk 1 was, because its rules depend on `getAfter(contract)` with `origin == 'onboarded'`. If chunk 1 is rejected, the follow-up `update` fails (no doc) and the onboarding payments fail their rule, so nothing orphaned lands. Even a partial landing keeps the `totalPaidPaise` cache equal to Σ of the landed payments, because each chunk is balanced. The projection remains the source of truth either way.
+- **IDs:** all IDs are client uuid v4, generated once when the plan is built. A queued batch retried by the SDK is idempotent. The screen guards against a double tap with `_busy`, as on create.
+- **Fully paid:** blocked by the validator and the rules (`totalPaidPaise < sanctionedPaise` on create). That means no close path and no `contractActive` flips are needed.
+
+*8. Reversal.*
+- `PaymentRepository.reversePayment` keeps its current shape, with one change: when `original.origin == onboarding`, the reversal's `paidOn` is the **original's `paidOn`** instead of today, and it copies `origin: 'onboarding'`. History is then corrected in place, and Received today or this month do not go negative for a historic correction. Live reversals are unchanged (dated today).
+- New `reverseOpeningBalance(ReverseOpeningCommand)` (owner, reason required) reverses every unreversed `openingBalance` tx of the contract. Each chunk holds ≤ 449 reversals plus `totalPaidPaise: increment(−Σchunk)`, and the chunks are balanced as in point 7.
+- Double reversal is still blocked through `snapshot.reversedIds`.
+
+*9. Preview equals the saved result.* `OnboardingDraft.preview(today)` builds the **same** `OnboardingPlan` in memory, using a deterministic placeholder id generator, and calls `projectContract(contract, installments, transactions, today)`. The preview tiles and timeline render that `ContractProjection`, the same object the contract detail renders after the save, so the two cannot disagree.
+
+*10. UI and screens.*
+- **Route:** `AppRoutes.onboardContractPath = '/contracts/onboard'` (`?borrowerId=`). It is declared **before** `'/contracts/:id'` in `app_router.dart`, like `newContractPath`. It is owner only: a collector gets `_leave('Only owners can onboard loans.')`, mirroring `CreateContractScreen`.
+- **Entry points (owner only):**
+  1. A `SegmentedToggle` "New loan · Existing loan" at the top of `CreateContractScreen`. "Existing loan" calls `pushReplacement` to the onboard route, carrying `borrowerId`. The onboard screen shows the same toggle with "Existing loan" selected.
+  2. A secondary (white, 1px border) "Existing loan" button beside "+ New loan" on `borrower_profile_view.dart`. The dashboard and rail "New loan" entry points reach it through the toggle; no extra FAB.
+- **Screen `OnboardContractScreen`** (`lib/features/contracts/presentation/screens/onboard_contract_screen.dart`). It reuses `BorrowerCard`, `LoanAmountFields`, `LoanSummaryCard`, `LoanScheduleFields` (with new `firstDueMin` / `firstDueMax` params; the defaults keep today's behaviour) and `DateField`. Sections follow the Stitch "4. Create New Loan Contract" pattern (label `Step n` + `headlineSm` title):
+  1. Borrower.
+  2. **Step 1 · Original loan:** sanctioned, upfront (helper "Enter what was deducted at disbursement; ₹0 if none") and the summary card.
+  3. **Step 2 · Original dates & schedule:**
+     - "Disbursed on" `DateField` (today−1096 … today);
+     - frequency, collection day;
+     - "First collection date" (disbursedOn … +366);
+     - the maturity line.
+  4. **Step 3 · Collected so far:**
+     - A `SegmentedToggle` with **Opening total · Itemised payments**.
+     - **Opening total:** a `CurrencyField` "Already collected" (₹ prefix PJS 600 textSecondary), a `PaymentModeSelector`, and a helper "Spread across N installments due up to today · ₹X advance".
+     - **Itemised:** a header row with the running total `MoneyText` vs sanctioned; "+ Add payment" and "Fill from schedule"; and a `ListView.builder` of payment rows (date · mode · amount, tabular), with edit and delete.
+     - **Editing a row** opens `PastPaymentSheet` (new) through `AdaptiveSheetPage` / `showAdaptiveSheet` (bottom sheet on compact, 560 dialog on expanded), with a DateField [disbursedOn, today], a CurrencyField, the mode selector and a reference.
+     - **"Fill from schedule"** asks for an "up to" date and pre-fills one row per installment due up to it.
+     - Switching modes keeps both inputs, but only the selected mode is saved.
+  5. **Step 4 · As of today:**
+     - three tiles in a `KpiTile` row: Collected (sage), Outstanding, Overdue (terracotta + warning icon + "N installments · highest D days late");
+     - the existing `schedule_preview.dart`, extended to render `ProjectedRow`s with `StatusPill`s (Paid, Partially paid, Overdue · N days, Due today, Upcoming, Added with the dashed `DashedBorderCard`);
+     - an info note on `primarySubtle`: "Unpaid past installments show as overdue and are added to the end of the schedule."
+     
+     Status colour is always paired with a label.
+  6. **Optional:** previous reference no., guarantor, purpose chips, notes.
+  
+  - **Sticky footer:** an "Outstanding ₹X · N overdue" `labelLgTabular` line, a primary button **"Onboard loan"**, and "Works offline · syncs automatically".
+  - **Layout:**
+    - Compact and medium: a single column (`AppSizes.formMaxWidth`).
+    - Expanded (`WindowSize.of(context)`, the breakpoint API already used by the create screen, with no raw MediaQuery maths): two columns inside the 1280 max. The form takes 7 of 12 columns, and the "As of today" preview takes 5, sticky at the top-right. On compact the preview stays inline as Step 4.
+    - Touch targets ≥ 48dp. Must survive 1.3× text scale.
+  - No new tokens are expected. Any that turn out to be needed go into `app_theme.dart`.
+- **Stitch:** no onboarding mock exists. The screen is composed from screen 4 (form) and screen 7 (timeline). A Stitch mock is optional and not blocking.
+- **After save:**
+  - `contract_detail_screen.dart` / `contract_header_card.dart` show a pill "Onboarded {dd MMM yyyy}" (`primarySubtle` + `textSecondary`, history icon) and "Ref {previousRef}".
+  - `payment_ledger_list.dart` and the borrower Recent receipts label rows "Opening balance" or "Recorded at onboarding". `receipt_share_panel` is not offered for `origin == onboarding`.
+  - An owner-only "Reverse opening balance" overflow action appears on the contract detail when unreversed opening rows exist. It uses the reverse dialog pattern, with the reason required.
+
+*11. Impact check: dashboard, calendar, notifications.*
+- **Due vs collected:** chart "due" buckets include the onboarded loan's past installments by `dueDate`, and the spread or itemised payments fill "collected" on their dates, so past collection rates stay realistic.
+- **Older history:** rows older than `chartWindowStart` are outside the chart and calendar navigation but count in Total collected. The active listener is unwindowed.
+- **History window:** `historyTransactionsProvider` (inactive contracts, `paidOn ≥ since`) is unaffected, because an onboarded loan is active.
+- **Overdue:** the Overdue tracker and Total overdue pick up past shortfall immediately. The notification scheduler's overdue nudge includes it on the next run; past rows are never scheduled as reminders.
+- **Performance:** a 3-year daily onboarding adds ≤ 1,100 transactions to the active listener. That is within the 100k target. `ProjectionMemo` keeps the cost at one recompute per change.
+
+**Component Breakdown:**
+
+| Component | Responsibility | Owner (skill) | Depends On |
+|-----------|---------------|-------|------------|
+| Domain: onboarding | model deltas, `onboarding.dart` validators / spread / fill-from-schedule, field names | `kani-orchestrator:role-ui-team` | none |
+| Rules: onboarding | contract-create onboarded branch, date helpers, immutability, onboarding-tx owner rule, rules tests | `kani-orchestrator:role-database-admin` | Domain: onboarding (field names) |
+| Data: onboarding write | `OnboardContractCommand`, `planOnboarding`, `BalancedChunks`, `onboardContract`, reversal dating, `reverseOpeningBalance` | `kani-orchestrator:role-ui-team` | Domain: onboarding |
+| UI: onboarding screen | route, entry points, form, past-payments section, preview, footer, adaptive layout, detail/ledger labels | `kani-orchestrator:role-ui-team` | Data: onboarding write |
+| Regression | portfolio / calendar / overdue / reversal tests on onboarded loans | `kani-orchestrator:role-ui-team` | Data: onboarding write |
+
+**API Contracts (if applicable):** no REST API. Internal Dart contracts:
+
+```dart
+// lib/domain/ledger/onboarding.dart  (pure Dart)
+const int maxOnboardBackdateDays = 1096;   // ~3 years
+const int maxFirstDueAfterDisbursalDays = 366;
+const int maxPastPayments = 1100;
+
+final class PastPaymentInput {              // also the spread output
+  const PastPaymentInput({required this.paidOn, required this.amount,
+      required this.mode, this.reference, this.openingBalance = false});
+  final CivilDate paidOn; final Money amount; final PaymentMode mode;
+  final String? reference; final bool openingBalance;
+}
+
+/// Empty = valid. Adds to validateContractTerms: disbursedOn window,
+/// firstDue in [disbursedOn, +366], each payment amount > 0 and paidOn in
+/// [disbursedOn, today], count ≤ maxPastPayments, Σ < sanctioned
+/// ("This loan is already fully repaid…" when Σ == sanctioned).
+List<ValidationError> validateOnboarding({
+  required List<ValidationError> termErrors, required Money sanctioned,
+  required CivilDate disbursedOn, required CivilDate firstDueDate,
+  required CivilDate today, required List<PastPaymentInput> payments});
+
+List<PastPaymentInput> spreadOpeningTotal({
+  required List<PlannedInstallment> schedule, required Money total,
+  required PaymentMode mode, required CivilDate disbursedOn, required CivilDate today});
+
+List<PastPaymentInput> fillFromSchedule({
+  required List<PlannedInstallment> schedule, required CivilDate upTo,
+  required PaymentMode mode});
+
+// lib/features/contracts/data/contract_repository.dart
+final class OnboardContractCommand implements LoanTermsInput { // + cid, borrower, today,
+  final List<PastPaymentInput> pastPayments;  // already spread when opening mode
+  final String? previousRef;
+}
+Future<LedgerWriteResult> onboardContract(OnboardContractCommand cmd); // owner; returns contractId
+
+// lib/features/payments/data/payment_repository.dart
+Future<PaymentWriteResult> reverseOpeningBalance(ReverseOpeningCommand cmd); // {cid, snapshot, reason, today, actor, role}
+```
+
+`planNewContract` gains the optional `origin`, `onboardedOn` and `previousRef` parameters. With them set, the disbursement tx gets `origin: onboarding`. Create and rollover callers are unchanged.
+
+**Data Models (delta only):**
+
+Collection: `companies/{cid}/contracts/{contractId}`
+- `origin`: `'standard' | 'onboarded'`. Absent on old docs, read as `standard`. Immutable after create.
+- `onboardedOn`: `string 'yyyy-MM-dd'?`. Required when onboarded; IST date of the save; immutable.
+- `previousRef`: `string?` (≤ 40). The paper or old-system loan number.
+- `totalPaidPaise`: when onboarded, it starts at Σ of chunk 1's payments via `increment` (rules: 0 ≤ value < sanctioned).
+- `disbursedOn` / `firstDueDate`: may be in the past when onboarded (windows above).
+
+Collection: `companies/{cid}/transactions/{txId}`
+- `origin`: `'live' | 'onboarding'`. Absent means `live`. Set on onboarding disbursement and payments, and on reversals of onboarding txs.
+- `openingBalance`: `bool`. Absent means `false`. True on spread opening-total payments.
+- Onboarding payments always have `mode`.
+
+Dart: `ContractOrigin { standard, onboarded }` and `TxOrigin { live, onboarding }` in `enums.dart`, serialised lowercase. `Contract` gets `@Default(ContractOrigin.standard) origin`, `CivilDate? onboardedOn` and `String? previousRef`. `LedgerTransaction` gets `@Default(TxOrigin.live) origin` and `@Default(false) bool openingBalance`. Converter round-trip tests cover docs with and without the fields. No new indexes.
+
+**Rules delta (`firebase/firestore.rules`):**
+```
+// helpers
+function civilTs(s) { let p = s.split('-'); return timestamp.date(int(p[0]), int(p[1]), int(p[2])); }
+function istNow() { return request.time + duration.value(330, 'm'); }
+function notFutureIst(s) { return civilTs(s) <= istNow() + duration.value(1, 'd'); } // 1-day skew tolerance
+
+// contracts: validNewContract(d): replace `d.totalPaidPaise == 0 && isInt(...)` with
+   && isInt(d.totalPaidPaise)
+   && ((d.get('origin', 'standard') == 'standard' && d.totalPaidPaise == 0
+        && d.get('onboardedOn', null) == null)
+       || validOnboarded(d))
+
+function validOnboarded(d) {
+  return d.origin == 'onboarded'
+      && d.get('rolledOverFromContractId', null) == null
+      && d.netDisbursedPaise == d.sanctionedPaise - d.upfrontPaise
+      && d.totalPaidPaise >= 0 && d.totalPaidPaise < d.sanctionedPaise
+      && isCivilDate(d.onboardedOn) && notFutureIst(d.onboardedOn)
+      && notFutureIst(d.disbursedOn)
+      && civilTs(d.disbursedOn) >= request.time - duration.value(1275, 'd')
+      && d.disbursedOn <= d.onboardedOn
+      && d.firstDueDate >= d.disbursedOn
+      && civilTs(d.firstDueDate) <= civilTs(d.disbursedOn) + duration.value(366, 'd')
+      && (d.get('previousRef', null) == null
+          || (d.previousRef is string && d.previousRef.size() <= 40));
+}
+// contracts create stays `owner(cid) && validNewContract(...)`, so an onboarded create is owner only.
+// contracts update (owner branch): add 'origin', 'onboardedOn', 'disbursedOn' to the
+//   !affectedKeys().hasAny([...]) list. Collector branch is already hasOnly([...]), unchanged.
+
+// transactions create: append
+   && (request.resource.data.get('origin', 'live') == 'live'
+       || onboardingTx(request.resource.data))
+function onboardingTx(d) {
+  let c = getAfter(/databases/$(database)/documents/companies/$(cid)/contracts/$(d.contractId)).data;
+  return d.origin == 'onboarding'
+      && owner(cid)
+      && d.type in ['disbursement', 'payment', 'reversal']
+      && c.get('origin', 'standard') == 'onboarded'
+      && d.paidOn >= c.disbursedOn && d.paidOn <= c.onboardedOn
+      && notFutureIst(d.paidOn)
+      && (d.type == 'disbursement' || d.get('mode', null) in ['upi', 'cash', 'bank'])
+      && d.get('openingBalance', false) is bool;
+}
+// transactions update stays onlyChanged(['contractActive']), so origin / openingBalance are immutable.
+// installments: unchanged (past dueDate already allowed; owner creates base rows).
+```
+- **Not adopted:** a date window on *live* payments or new contracts. An offline batch rejected at sync is silently dropped from the cache, so tightening existing paths risks losing real collections. This known gap stays the same: live `paidOn` is limited by the UI only.
+- **Rules call budget:** member + company + contract (`getAfter`) are 3 distinct docs per evaluation, and repeated lookups of the same doc are de-duplicated within a request. Task 19 must prove that a 450-op chunk-1 batch passes on the emulator.
+
+**Rules tests** (`firebase/test/sprint7b_onboarding.test.js`, roles: owner / collector / other-company owner / signed-out):
+
+| Case | Expected |
+|---|---|
+| Owner: chunk-1 batch (contract onboarded + 366 inst + disbursement + 81 payments, totalPaid = Σ) | allowed |
+| Owner: chunk-2 batch (449 payments + contract increment) | allowed |
+| Collector / other-company owner / signed-out: same chunk-1 batch | denied |
+| Collector: an `origin: 'onboarding'` payment on an onboarded contract | denied |
+| Collector: a live payment on an onboarded contract | allowed (unchanged) |
+| Onboarded contract with totalPaid == sanctioned; > sanctioned; negative | denied |
+| Standard contract with totalPaid > 0, or with onboardedOn set | denied (unchanged guarantee) |
+| disbursedOn = IST tomorrow + 1; disbursedOn older than 1275 d; disbursedOn > onboardedOn | denied |
+| firstDue < disbursedOn; firstDue > disbursedOn + 366 | denied |
+| onboardedOn in the future (> tomorrow) | denied |
+| Onboarding payment: paidOn < disbursedOn; > onboardedOn; future; missing mode; on a `standard` contract | denied |
+| Onboarding reversal by owner dated at original paidOn | allowed; by collector, denied |
+| Owner update changing `origin` / `onboardedOn` / `disbursedOn` | denied |
+| Update of `origin` / `openingBalance` on a tx | denied |
+| Every existing test in `rules.test.js`, `sprint5_*`, `sprint6_*`, `tester_*` | still passes |
+
+**Non-Functional Requirements:**
+- **Security.**
+  - Owner only, in three places: the UI (`currentRoleProvider`), the repository (`cmd.role != owner` gives `PermissionDeniedFailure`) and the rules (above).
+  - Inputs are validated in the domain and again in the rules.
+  - Accepted risk, unchanged: the rules cannot prove Σ payments == totalPaid. Chunk balancing keeps honest clients consistent.
+  - `FLAG_SECURE` applies to the screen, as on other balance screens.
+- **Error handling.**
+  - Inline field errors from `validateOnboarding`, using new `LedgerFields`: `disbursedOn`, `pastPayments`, `openingTotal`, `previousRef`. An error on an itemised row highlights that row.
+  - The "fully repaid" error appears under the Collected-so-far total.
+  - `permission-denied` maps to `AppFailure`. "Saved · will sync" appears when queued.
+- **Performance.**
+  - The preview recomputes on every edit. `projectContract` over ≤ 366 rows + ≤ 1,100 payments must stay below 16 ms on a mid-range phone; add a benchmark test, as for portfolio.
+  - Itemised rows use `ListView.builder` inside a bounded height, or a sliver.
+  - At most 4 batches per onboarding.
+- **Data integrity.**
+  - No `runTransaction`. All IDs are client uuids. Transactions are append-only.
+  - `totalPaidPaise` is only ever changed through `increment`. No paid or status field is stored. Extensions are computed.
+  - Every doc is stamped `recordedBy`, `recordedByName`, `recordedAt` (serverTimestamp), `clientRecordedAt` and `deviceId`. "Today" comes from `todayProvider` / `IstClock` only.
+
+**Assignable Tasks:**
+
+| # | Task Name | Owner (skill) | Depends On |
+|---|-----------|-------|------------|
+| 18 | Domain for onboarding: `ContractOrigin` / `TxOrigin` enums; the `Contract` fields `origin`, `onboardedOn`, `previousRef`; the `LedgerTransaction` fields `origin`, `openingBalance` (freezed + JSON, converter round-trip with and without the fields); `lib/domain/ledger/onboarding.dart` (`PastPaymentInput`, limits, `validateOnboarding`, `spreadOpeningTotal`, `fillFromSchedule`); the new `LedgerFields`; export from `ledger.dart`. 100% branch coverage: windows at their edges, Σ == sanctioned blocked, spread with exact / partial / advance / no row due yet, whole schedule in the past, a projection over spread payments equal to a projection over a single payment | `kani-orchestrator:role-ui-team` | none (Sprints 5–7 passed) |
+| 19 | Firestore rules delta (helpers `civilTs` / `istNow` / `notFutureIst`, the `validOnboarded` branch, origin immutability on contract update, the `onboardingTx` rule) plus the `firebase/test/sprint7b_onboarding.test.js` matrix above. The full existing suite must stay green. `firebase deploy --only firestore:rules` is listed as a human step | `kani-orchestrator:role-database-admin` | Task 18 |
+| 20 | Data write path: `planNewContract` optional `origin` / `onboardedOn` / `previousRef`; `OnboardingPlan` + `planOnboarding`; `lib/core/firebase/balanced_chunks.dart` (chunk-1 raw-map contract set with `totalPaidPaise: increment(Σ)`, follow-up chunks of ≤ 449 payments + a contract increment, ordered commit, `batchCount`); `ContractRepository.onboardContract` (owner check, `validateOnboarding`, company `nextLoanNo` increment); `reversePayment` dates onboarding reversals at the original `paidOn` and copies `origin`; `PaymentRepository.reverseOpeningBalance` (balanced chunks); `contractActionsProvider.onboard(...)`. Tests with `fake_cloud_firestore`: 1-, 2- and 4-batch plans, Σ chunk payments == Σ increments == totalPaid, unique ids, stamps, mode always present, collector refused | `kani-orchestrator:role-ui-team` | Task 18 |
+| 21 | UI:<br>- `OnboardingDraft` (application) with a live `preview(today)` via `planOnboarding` + `projectContract`;<br>- route `/contracts/onboard` declared before `/contracts/:id`;<br>- entry points: the "New loan · Existing loan" toggle on `CreateContractScreen`, and the "Existing loan" button on `borrower_profile_view.dart`, both owner only;<br>- `OnboardContractScreen` (Steps 1–4 + optional, sticky footer, collector `_leave`);<br>- `LoanScheduleFields` first-due min/max params;<br>- `PastPaymentSheet` via `AdaptiveSheetPage`, Fill from schedule;<br>- `schedule_preview.dart` rendering `ProjectedRow` statuses;<br>- expanded 7/5 two-pane;<br>- contract header "Onboarded" pill + Ref;<br>- ledger / receipts labels, receipt share hidden for onboarding txs;<br>- owner "Reverse opening balance" action.<br>Widget tests at compact and expanded widths (form, both modes, validation messages, preview equals detail after save, collector redirect, 1.3× text scale) | `kani-orchestrator:role-ui-team` | Task 20 |
+| 22 | Regression on onboarded loans (domain + provider tests). Given an onboarded loan:<br>- Total collected includes all past payments, including any older than 12 months;<br>- the chart buckets and calendar days show the cash on its own dates;<br>- the collection rate stays ≤ 100% with spread;<br>- received today and collected this month are unaffected unless a payment is dated in them;<br>- Total net disbursed includes the net;<br>- overdue tracker / Total overdue / extension rows are correct;<br>- an onboarding reversal moves cash on the original date only, and an opening-balance reversal restores the outstanding;<br>- the notification scheduler includes the overdue nudge and no past reminders.<br>Projection benchmark (≤ 16 ms, 366 rows × 1,100 payments) | `kani-orchestrator:role-ui-team` | Task 20 |
+
 ---
 
 ## 3. Sprint Plan
@@ -671,10 +1097,12 @@ invites/{code}: get if signedIn; list if signedIn && owner(resource.data.company
 | 5 | 10 Borrowers · 11 Contracts (create, detail timeline, reschedule) | `kani-orchestrator:role-ui-team` | 4 | passed | An owner adds borrowers and creates contracts, including offline, with a correct net-disbursed figure and an auto-generated schedule. The owner views the timeline and reschedules an installment. Data syncs to the second device. |
 | 6 | 12 Payments, reversal & rollover · 12b Close-loan chip + early-closure waiver (added 2026-11-23) | `kani-orchestrator:role-ui-team` | 5 | passed | Full, partial and advance payments update the schedule. A partial or missed installment shows as overdue and auto-extends at the end. A contract closes at ₹0, including a one-tap "Close loan" and an owner-only early-closure waiver. An owner rolls over a contract with the correct net cash. Excess is flagged after a concurrent offline collection. |
 | 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | passed | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
-| 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7 | pending | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
+| 7b | 18 Onboarding domain (models, validators, opening-total spread) · 19 Onboarding rules + rules tests · 20 Onboarding write path (balanced chunks, reversal dating, opening-balance reversal) — added 2026-11-24 | `kani-orchestrator:role-ui-team`, `kani-orchestrator:role-database-admin` | 7 | passed | Verifiable through the automated suites alone (like Sprint 2). The domain tests show a backdated loan's validation windows and the opening-total spread, and a projection with correct paid, partial, overdue and extension rows. The emulator rules tests show an owner's onboarding batches (1 and 2 chunks, 450 ops) are allowed and collector, other-company and out-of-window writes are denied. The `fake_cloud_firestore` tests show Σ payments == Σ increments == totalPaid across 1–4 batches. |
+| 7c | 21 Onboard existing loan screen, entry points, preview, labels · 22 Regression on onboarded loans — added 2026-11-24 | `kani-orchestrator:role-ui-team` | 7b | pending | On a device, as owner, onboard a weekly loan disbursed 3 months ago with an opening total, and a daily loan with itemised past payments, both while offline. The "As of today" preview matches the saved contract. Unpaid past installments show overdue with days late and auto-extend. The past cash appears on its own dates in Total collected, the chart and the calendar, without changing Received today. A collector cannot see or open onboarding. Reversing an onboarding payment corrects its original date. |
+| 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7, 7c | pending | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
 | 9 | 17 Release & Play readiness | `kani-orchestrator:role-ui-team` | 8 | pending | A signed release `.aab` builds with the launcher icon and splash, Google sign-in works in the release build, and the Play publishing checklist is ready for internal-testing upload. |
 
-**Total sprints:** 9
+**Total sprints:** 9 (originally) + 7b and 7c (added 2026-11-24) = 11
 
 **Testing Strategy:** per-sprint
 
@@ -682,6 +1110,12 @@ invites/{code}: get if signedIn; list if signedIn && owner(resource.data.company
 - Ledger maths (Sprint 2) and security rules (Sprint 3) sit on their own ahead of any feature UI. They are the highest-risk logic, they are fully verifiable through automated tests alone, and every later sprint builds on them.
 - Feature sprints pair each data path with its screen, so a human can exercise a real flow on a device at the end of every sprint.
 - Release is isolated last, matching the user's "publish to Play is the last step".
+- **Onboard an existing loan (added 2026-11-24).** The work runs next, before Sprint 8, so the Sprint 8 responsive pass and notification work also cover the new screen and onboarded overdue items.
+  - **Why two sprints, not one:** there are five tasks (18–22), and the per-sprint cap is three. Rather than renumber, the sprints are named **7b** and **7c**. Sprints 8 and 9 keep their numbers, because the Section 4 logs already refer to "Sprint 8".
+  - **7b** holds everything verifiable without UI: domain, rules and the write path. This mirrors how Sprints 2 and 3 isolated ledger maths and rules. Inside 7b, Task 18 lands first; Tasks 19 and 20 can then run in parallel, since both need only the field names from 18.
+  - **7c** pairs the screen with the regression tests, so the on-device goal is checked against proven metrics.
+  - **Sprint 8 dependency:** Sprint 8 now depends on 7c.
+  - **Deploy:** the rules must be deployed (`firebase deploy --only firestore:rules`) before 7c's on-device test. Without that, the onboarding batches are rejected at sync.
 
 ---
 
@@ -2050,6 +2484,248 @@ Sprint Test Summary: 48 passed, 3 failed (skipped; Bugs 1–3).
   - the chart tooltip;
   - the 1.3× text check on a real phone;
   - the Sprint 6 carry-forward items.
+
+---
+
+### Sprint 7b
+
+**Sprint Goal:** An owner can onboard an existing, in-progress loan offline: the domain validates the backdated windows and spreads an opening total, the rules accept the owner's chunk-balanced onboarding batches and deny everything else, and the write path keeps Σ payments == Σ increments == totalPaid across 1–4 batches.
+
+**kani-orchestrator:role-database-admin — Task 19 Onboarding rules:**
+
+Files created/modified:
+- `firebase/firestore.rules`: adds the IST date helpers `civilTs`, `istNow` and `notFutureIst`; the `validOnboarded` contract-create branch; `origin`, `onboardedOn` and `disbursedOn` immutability on the owner contract update; and the `onboardingTx` transaction rule.
+- `firebase/test/sprint7b_onboarding.test.js` (new, 61 tests): the Task 19 matrix. Dates are relative to IST today, so the suite does not age.
+
+Key decisions:
+- **Exactly the rules delta in the Technical Design.** Field names and values:
+  - contract: `origin: 'standard' | 'onboarded'`, `onboardedOn`, `previousRef`;
+  - tx: `origin: 'live' | 'onboarding'`, `openingBalance`.
+- **Standard contracts are unchanged.** When `origin` is absent or `'standard'`, a contract still needs `totalPaidPaise == 0` and `onboardedOn` absent or null. Any other `origin` value must pass `validOnboarded`, so unknown values are denied.
+- **Onboarded contract create.** Owner only, through the existing `owner(cid)` create gate. It requires:
+  - no rollover link;
+  - net == sanctioned − upfront;
+  - 0 ≤ totalPaid < sanctioned (fully repaid is blocked);
+  - `onboardedOn` a civil date, ≤ IST tomorrow;
+  - `disbursedOn` ≤ IST tomorrow and ≥ request.time − 1275 days (3 years plus 180 days of offline slack);
+  - `disbursedOn` ≤ `onboardedOn`;
+  - `firstDueDate` from `disbursedOn` to `disbursedOn` + 366 days;
+  - `previousRef` null or a string of ≤ 40 characters.
+- **1-day skew tolerance.** `civilTs(s)` is the date's 00:00 on a UTC-labelled scale, and `istNow()` is `request.time` + 330 min on the same scale. `notFutureIst` therefore accepts IST tomorrow and denies the day after.
+- **`onboardingTx`.** This branch applies when tx `origin == 'onboarding'`. It requires:
+  - an owner;
+  - type `disbursement`, `payment` or `reversal`;
+  - `getAfter(contract)` with `origin == 'onboarded'`, so a later chunk works once chunk 1 has landed, and is denied if the contract does not exist;
+  - `paidOn` within [contract.disbursedOn, contract.onboardedOn] and ≤ IST tomorrow;
+  - a `mode` in `upi` / `cash` / `bank`, except on a disbursement;
+  - `openingBalance`, if present, a bool.
+- **Live txs.** `origin` absent or `'live'` keep every existing rule, and **no date window was added (deliberate)**. One small tightening: a live tx may not carry `openingBalance: true`. This is safe because Dart writes `false` or omits the field.
+- **Transaction immutability is already covered.** `origin` and `openingBalance` cannot change because tx update is still `onlyChanged(['contractActive'])`. The collector contract-update branch is `hasOnly`, so it already could not touch the immutable fields.
+- **Rules call budget.** The 450-op chunk 1 (contract + 366 installments + disbursement + `nextLoanNo` + 81 payments) passes on the emulator. It touches only three distinct documents: member, company and contract.
+
+Known limitations:
+- As before, the rules cannot prove that Σ onboarding payments == `totalPaidPaise`. Chunk balancing on the client keeps honest clients consistent (accepted risk in the design).
+- A later-chunk `update` is checked only by the generic owner contract-update branch, which requires totalPaid ≥ 0. It is not re-checked against `< sanctioned`. The domain validator guards this.
+- `previousRef` stays editable by an owner after create. The design did not ask for it to be immutable.
+- The emulator is lenient about some production limits, so the 450-op budget should be re-checked once on the live project after deploy.
+
+Verification:
+- `cd firebase && npm test`: **12 files, 466 tests passed** (baseline 405 + 61 new). All earlier suites are unchanged and green.
+
+**REDEPLOY REQUIRED** (`firebase deploy --only firestore:rules`, a human step that was not run). Until it is deployed, the live rules deny every onboarded contract create, because they still require `totalPaidPaise == 0`. They would also accept onboarding txs without the date and mode checks. Standard create, payment, reversal and rollover writes are compatible both before and after the deploy.
+
+**kani-orchestrator:role-ui-team — Task 18 Onboarding domain:**
+
+Files created/modified:
+- `lib/domain/models/enums.dart`: adds `ContractOrigin { standard, onboarded }` and `TxOrigin { live, onboarding }`, both serialised as lowercase names.
+- `lib/domain/models/contract.dart`: adds three fields and an `isOnboarded` getter.
+  - `origin`: `@Default(standard)`, with `unknownEnumValue: standard`.
+  - `onboardedOn`: `CivilDate?`.
+  - `previousRef`: `String?`.
+- `lib/domain/models/ledger_transaction.dart`: adds two fields and an `isOnboarding` getter.
+  - `origin`: `@Default(live)`, with `unknownEnumValue: live`.
+  - `openingBalance`: `@Default(false)`.
+- `lib/domain/ledger/validators.dart`: adds the new `LedgerFields` `disbursedOn`, `pastPayments`, `openingTotal` and `previousRef`, plus row helpers `pastPayment(i)` (gives `pastPayments.i`) and `pastPaymentIndex(field)`.
+- `lib/domain/ledger/onboarding.dart` (new, exported from `ledger.dart`):
+  - limits: `maxOnboardBackdateDays` 1096, `maxFirstDueAfterDisbursalDays` 366, `maxPastPayments` 1100, `maxPreviousRefLength` 40;
+  - `openingBalanceNote`;
+  - `PastPaymentInput`;
+  - helpers `earliestOnboardDisbursal`, `latestOnboardFirstDue` and `pastPaymentsTotal`;
+  - `validateOnboarding`, `spreadOpeningTotal` and `fillFromSchedule`;
+  - `balancedChunkSizes`, the pure chunk planner.
+- Generated: `contract.freezed.dart` / `.g.dart` and `ledger_transaction.freezed.dart` / `.g.dart`.
+- Tests (new):
+  - `test/domain/ledger/onboarding_test.dart` (44 tests);
+  - `test/domain/models/onboarding_fields_test.dart` (10 tests): JSON and Firestore-converter round trips with and without the new fields, and unknown enum values.
+
+Key decisions:
+- **Deviation: `PastPaymentInput.mode` is `PaymentMode?`, not `PaymentMode`.** This lets a missing mode be a real validation failure ("Choose a payment mode.") instead of something the type system hides, and it lets a Task 21 row editor hold a row with no mode yet. `validateOnboarding` rejects null. `planOnboarding` throws `ArgumentError` if a null mode ever reaches it. Spread and fill always set the mode.
+- **Deviation (additive): `validateOnboarding` takes an optional `previousRef`.** It checks the ≤ 40-character limit, so that `LedgerFields.previousRef` has a source.
+- **Firestore fields follow the design exactly.**
+  - Every contract now writes `origin` (`'standard'` or `'onboarded'`), `onboardedOn` and `previousRef`. A standard contract writes null for the last two, which the Task 19 rules accept.
+  - Every tx writes `origin` (`'live'` or `'onboarding'`) and `openingBalance`. A live tx always writes `false`.
+  - Old docs without these fields read as `standard` / `live` / `false`.
+- **Validation rules.**
+  - The windows are inclusive at both edges:
+    - `disbursedOn` from today − 1096 to today;
+    - `firstDueDate` from `disbursedOn` to `disbursedOn` + 366;
+    - each `paidOn` from `disbursedOn` to today.
+  - A `firstDueDate` error already reported by the term validator is not repeated.
+  - Each row gets at most one error, on the field `pastPayments.i` (checked in this order: amount > 0, mode, before disbursement, future).
+  - Σ == sanctioned gives "already fully repaid", and Σ > sanctioned is rejected. These total errors go on `openingTotal` when every row is an opening-balance row, and on `pastPayments` otherwise.
+- **The spread follows the design.**
+  - It walks the rows due on or before today, in (dueDate, seq) order, and gives each one `min(left, amount)`.
+  - The advance is dated on max(disbursedOn, the last such due date), or on disbursedOn when no row is due yet.
+  - Every spread row is `openingBalance` and carries the chosen mode.
+  - A row that falls due today is covered on today, as the design specifies (`dueDate ≤ today`).
+- **Chunk planner.** `balancedChunkSizes` is pure domain code, so the chunk maths can have 100% branch coverage. `BalancedChunks` (Task 20) is a thin Firestore wrapper around it.
+
+Known limitations:
+- No helper text ("Spread across N installments · ₹X advance") is pre-built. Task 21 can derive it from the `spreadOpeningTotal` output: the rows plus a trailing advance row.
+
+Verification:
+- `flutter test test/domain/ledger/onboarding_test.dart --coverage --branch-coverage`: `onboarding.dart` has **101/101 lines and 43/43 branches** covered (lcov).
+- The tests include:
+  - the projection over the spread equals the projection over a single payment, for ₹0, partial, exact, advance and ₹99,999 totals;
+  - a whole past schedule with overdue rows and extension rows;
+  - the 366 + 1,100 worst case gives chunks [81, 449, 449, 121].
+
+**kani-orchestrator:role-ui-team — Task 20 Onboarding write path and reversal:**
+
+Files created/modified:
+- `lib/core/firebase/balanced_chunks.dart` (new): `BalancedChunks`.
+  - Batch 1 holds the `firstBalance` op, the fixed ops and as many items as fit. Batches 2…m hold the `laterBalance` op and up to `limit − 1` items.
+  - Spill ops fill the last batch, then new batches.
+  - Getters: `chunkSizes`, `chunkSums`, `batchCount`, `opsPerBatch`.
+  - `commit()` commits every batch at once, in order (no transactions).
+- `lib/features/contracts/data/onboarding_plan.dart` (new; exported from `contract_repository.dart`):
+  - `OnboardContractCommand implements LoanTermsInput`. It adds `role`, `today`, `pastPayments` and `previousRef`.
+  - `validateOnboardCommand`.
+  - `OnboardingPlan`: `contract`, `installments`, `transactions` and `totalCollected`, plus `chunks(db, cid)`.
+  - `planOnboarding`.
+- `lib/features/contracts/data/contract_repository.dart`:
+  - `planNewContract` gains the optional `origin`, `onboardedOn` and `previousRef`. When onboarded, the disbursement gets `origin: onboarding`. The defaults leave create and rollover unchanged.
+  - New `batchLimit` setting.
+  - New `onboardContract(cmd)`: owner check, then `validateOnboardCommand`, then `planOnboarding`, then the balanced commit with `awaitServerAck`.
+- `lib/features/payments/data/payment_repository.dart`:
+  - `reversePayment` dates the reversal on the original's `paidOn` when `original.origin == onboarding`, and copies `origin`. Live reversals are still dated today.
+  - New `ReverseOpeningCommand {cid, snapshot, reason, actor, role}` and `unreversedOpeningBalance(snapshot)`.
+  - New `reverseOpeningBalance(cmd)` (balanced chunks). It reopens a closed loan and flips `contractActive` back, like `reversePayment`.
+  - `_flipActive` now takes a spill callback, so `ChunkedBatch` and `BalancedChunks` share it.
+- `lib/features/contracts/application/contract_providers.dart`: `ContractActions.onboard(...)`. Role comes from `currentRoleProvider`, today from `todayProvider`, and the actor from `readLedgerActor`.
+- `lib/features/payments/application/payment_providers.dart`: `PaymentActions.reverseOpeningBalance(view, reason)`.
+- Tests (new):
+  - `test/core/firebase/balanced_chunks_test.dart` (5 tests);
+  - `test/features/contracts/onboard_contract_repository_test.dart` (20 tests);
+  - `test/features/payments/onboarding_reversal_test.dart` (8 tests).
+
+Key decisions:
+- **Chunk 1 writes the contract with a raw-map `set`.** The map is `ModelCodecs.contract.toFirestore(contract)` with `totalPaidPaise: FieldValue.increment(Σ chunk-1 payments)`, so the aggregate is initialised through increment. `lastPaymentOn` is the latest `paidOn` overall.
+- **Later chunks.** Each later chunk is `update {totalPaidPaise: increment(Σ chunk), updatedAt}` plus at most 449 payments. Every batch balances itself; the tests check this per batch by object identity.
+- **The aggregate op is the first op of every batch.** In batch 1 the contract `set` comes before the installments and payments. In later batches the contract `update` comes first. Firestore ignores order inside a batch, but `fake_cloud_firestore` applies the batches' tasks interleaved, and a later chunk's `update` must never run before the contract exists.
+- **Payment order.** Payments are sorted oldest first (a stable sort with an index tiebreak), so batch 1 always carries the oldest cash. All IDs are drawn once in `planOnboarding` with client uuid v4, so a retried batch is idempotent.
+- **What every onboarding payment carries:**
+  - `origin: 'onboarding'`;
+  - the mode;
+  - `openingBalance` (true for spread rows, whose `note` is `'Opening balance'`; null note for itemised rows);
+  - `recordedBy`, `recordedByName`, `deviceId`, `clientRecordedAt`, and `recordedAt` as serverTimestamp through the converter.
+- **Reversals of onboarding payments.** An opening-balance reversal keeps `openingBalance: false`; only the original payment is marked. The reversal copies the original's mode, as the rules require.
+- **Deviation:** `ReverseOpeningCommand` has no `today` field. Every reversal is dated on its original's `paidOn`, so `today` would be unused.
+- **Owner checks.** A `role` other than owner (collector, or null) gets `PermissionDeniedFailure` in both `onboardContract` and `reverseOpeningBalance`. This mirrors the Task 19 rules.
+
+Known limitations:
+- No screen yet; that is Task 21 (Sprint 7c).
+  - `OnboardingDraft.preview` should call `planOnboarding` and then `projectContract`. The repository test "preview of the plan equals the saved projection" already proves that equality.
+  - `planOnboarding` takes a `Uuid`, so the preview can pass `const Uuid()`, or a deterministic subclass if needed.
+- `reversePayment` still does not check the role on the client, as before; the rules enforce owner only. `reverseOpeningBalance` does check it.
+- If chunk 1 is rejected at sync, the later chunks fail too, as designed: their rules need `getAfter(contract)`. The SDK drops the rejected writes from the cache. This is the accepted design risk.
+
+Verification:
+- `dart run build_runner build --delete-conflicting-outputs`: OK.
+- `flutter analyze`: **No issues found.**
+- `flutter test`: **1004 passed, 0 failed** (baseline 917 + 87 new).
+- The repository tests cover:
+  - a weekly opening total (exact docs, nothing dated today, projection: 3 overdue, 35 days late, extension rows);
+  - ₹0 collected, and upfront ₹0 (net = sanctioned);
+  - a daily loan with 366 rows and 300 itemised payments, giving 2 batches with ops [450, 220];
+  - 81, 82, 600 and 1,100 payments, giving 1, 2, 3 and 4 batches, with every batch balanced and Σ payments == Σ increments == `totalPaidPaise`;
+  - unique IDs, the stamps, and a mode always present;
+  - validation failures that write nothing: a date before disbursedOn, a date after today, a missing mode, total == sanctioned, total > sanctioned, disbursedOn in the future or older than 3 years, first due later than +366 days, and a term error;
+  - a collector or a null role refused;
+  - an onboarding reversal dated on the original date with `origin` copied, while a live reversal is still dated today;
+  - an opening-balance reversal across 3 batches, skipping rows already reversed, reopening a closed loan, owner only with a reason required.
+- `cd firebase && npm test` (read-only check): **466/466 passed**. The first run had one failure, `sprint5_borrowers` "owner changing createdAt", which I did not touch; it passed on the immediate rerun, so it looks like a flaky emulator timing issue.
+
+
+**Module Lead — Sprint 7b Review (attempt 1):**
+Date: 2026-11-24
+
+- Re-ran independently:
+  - `flutter analyze` is clean;
+  - `flutter test` passes 1004/1004;
+  - `npm test` passes 466/466.
+- The "flaky" `sprint5_borrowers` "owner changing createdAt" test is a test bug that predates 7b: seed and patch use `Timestamp.now()` and can fall in the same millisecond.
+- **Deploy order:** safe in both orders for this build.
+  - The ad902c6 rules have no key whitelist on contract create or tx create, so the new default fields pass.
+  - Old docs read with the defaults.
+  - The rules are **mandatory** before any build containing the Task 21 screen. Without them, the old rules would accept a ₹0 onboarding with no date checks.
+- **Rules budget:** chunk 1 touches only 3 distinct docs, the same risk as the already-deployed 366-row standard create.
+- **Totals:** each batch's increment equals that batch's payments, and the chunk-1 `increment` on the new doc is checked on the post-write value.
+- **Spread:** FIFO in integer paise; the remainder becomes an advance row. It matches the user decision.
+- **Reversal:** dating on the original date is allowed by `onboardingTx`. `reverseOpeningBalance` is chunked and re-runnable.
+- **Live path:** no regressions.
+- Findings, all carried into 7c:
+  - **M1 (medium):** `batchLimit` can't shrink chunk 1, because installments are fixed ops (`onboarding_plan.dart:153`, `balanced_chunks.dart:83`). Make installments spill ops, then run a production smoke test after the deploy (366-row standard create + daily onboarding).
+  - **M2 (medium):** a partial onboarding (chunk n rejected) is silent and can't be repaired. Store immutable `onboardedPaymentCount` / `onboardedTotalPaise`, show "Onboarding incomplete: X of Y synced", and add an owner "Add missing onboarding payment".
+  - **L1:** a row due today and the advance are dated today, so they show in Received today. Confirm the behaviour or adjust, and add helper copy in Task 21.
+  - **L2:** reversals have no guard for rolledOver / cancelled. Hide the action in Task 21 and/or add a `ValidationFailure`.
+  - **L3:** fix the flaky test.
+  - **L4 / L5:** info only.
+- **Verdict: PASS.**
+
+
+**Tester — Sprint 7b Results (attempt 1):**
+
+New tests (test only):
+- `test/domain/ledger/tester/s7b_onboarding_test.dart` (24)
+- `test/features/contracts/tester/s7b_onboard_repository_test.dart` (25)
+- `firebase/test/tester_s7b.test.js` (25)
+
+The rules replay mirrors the exact Dart doc key sets and chunk sizes. A shape test fails if the two drift apart.
+
+40 cases covered:
+- **Weekly loan:** ₹1,00,000 with a ₹55,000 opening total spread over rows 1–5 plus a ₹5,000 partial on row 6. Nothing is dated today.
+- **As of today:** overdue rows 6–10 at 35 / 28 / 21 / 14 / 7 days, and extensions totalling ₹45,000.
+- **Dashboard:** KPIs, the chart and the calendar show the cash on its original dates; received today is ₹0.
+- **Spread:** projecting the spread equals projecting a single payment of the same total.
+- **Daily itemised loans:** 300 payments (2 batches) and 1,100 payments (4 batches), each batch balanced; the preview equals the saved projection.
+- **Failures:** every failure case writes nothing. That covers fully repaid, over sanctioned, dates out of range, more than 3 years back, first due out of range, missing mode, `previousRef` over 40 characters, more than 1,100 rows, and a collector or null role.
+- **Upfront ₹0:** accepted, with net = sanctioned.
+- **Reversals:** a single reversal is dated on the original date. Reverse-opening-balance touches only opening rows, and running it twice is a no-op error.
+- **Live payments on an onboarded loan:** recorded normally, and one can close the loan.
+- **Backward compatibility:** old docs without the new fields read correctly.
+- **Rules replay:** owner allowed; collector, other-company and signed-out denied; `openingBalance` on a live tx denied; immutability enforced.
+
+Full run:
+- `flutter analyze`: clean;
+- `flutter test`: 1053/1053, 0 skipped;
+- `npm test`: 491/491.
+
+Bugs Found: none.
+
+Observations:
+- **O1 (= ML L1):** a row due today is spread "on today", so it shows in Received today.
+- **O2:** the repository accepts a mixed opening-total + itemised command, so Task 21 must send only the selected mode.
+- **O3:** a cosmetic day-name comment is wrong.
+- **O4:** known design limits only.
+
+Sprint Test Summary: 40 passed, 0 failed.
+
+**Orchestrator fix:** Module Lead L3. The flaky `sprint5_borrowers` "owner changing createdAt" test now patches with `Timestamp.fromMillis(Date.now() + 60_000)`.
+
+**Sprint 7b: PASSED** (automated-only sprint goal: Module Lead PASS, Tester 40/40; 1053 Flutter, 491 rules). Rules not yet deployed. M1, M2, L1, L2 and O2 are carried into Sprint 7c.
+
+**User decision (2026-11-26), L1 / O1:** the opening-total spread covers only installments due **before** today. Today's installment stays open for live collection, and any advance is dated on the last due date before today (or `disbursedOn`). Do it in Sprint 7c.
 
 ---
 

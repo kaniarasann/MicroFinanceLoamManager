@@ -42,6 +42,18 @@ service cloud.firestore {
     function isCivilDate(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
     function optCivilDate(v) { return v == null || isCivilDate(v); }
 
+    // IST civil-date helpers (Sprint 7b, onboarding). `civilTs` maps a
+    // 'yyyy-MM-dd' string to that date's 00:00 on a UTC-labelled clock; `istNow`
+    // is the request time shifted to IST wall-clock on the same scale, so the two
+    // compare as IST civil dates. Callers must check isCivilDate first.
+    function civilTs(s) {
+      let p = s.split('-');
+      return timestamp.date(int(p[0]), int(p[1]), int(p[2]));
+    }
+    function istNow() { return request.time + duration.value(330, 'm'); }
+    // Not after IST tomorrow (1-day tolerance for device clock skew).
+    function notFutureIst(s) { return civilTs(s) <= istNow() + duration.value(1, 'd'); }
+
     // Create: the new doc has only these keys.
     function onlyKeys(keys) { return request.resource.data.keys().hasOnly(keys); }
     // Update: the changed keys (added, removed or modified) are only these.
@@ -261,10 +273,35 @@ service cloud.firestore {
               && isInt(d.installmentPaise) && d.installmentPaise > 0
               && isInt(d.baseInstallmentCount) && d.baseInstallmentCount > 0
               && d.baseInstallmentCount <= 366
-              && d.totalPaidPaise == 0 && isInt(d.totalPaidPaise)
+              && isInt(d.totalPaidPaise)
               && d.get('totalWaivedPaise', 0) == 0 && isInt(d.get('totalWaivedPaise', 0))
               && isCivilDate(d.firstDueDate) && isCivilDate(d.disbursedOn)
-              && d.createdBy == request.auth.uid;
+              && d.createdBy == request.auth.uid
+              // Standard (new / rollover) contracts start unpaid and carry no
+              // onboarding marker; onboarded contracts may start part-paid.
+              && ((d.get('origin', 'standard') == 'standard'
+                    && d.totalPaidPaise == 0
+                    && d.get('onboardedOn', null) == null)
+                  || validOnboarded(d));
+        }
+
+        // Onboarded existing loan (Sprint 7b). totalPaidPaise starts at the
+        // chunk-1 payments' sum (via increment) and must stay below sanctioned
+        // (fully repaid loans are blocked). Dates may be in the past: disbursedOn
+        // within 3 years + 180 days offline slack; nothing after IST tomorrow.
+        function validOnboarded(d) {
+          return d.origin == 'onboarded'
+              && d.get('rolledOverFromContractId', null) == null
+              && d.netDisbursedPaise == d.sanctionedPaise - d.upfrontPaise
+              && d.totalPaidPaise >= 0 && d.totalPaidPaise < d.sanctionedPaise
+              && isCivilDate(d.onboardedOn) && notFutureIst(d.onboardedOn)
+              && notFutureIst(d.disbursedOn)
+              && civilTs(d.disbursedOn) >= request.time - duration.value(1275, 'd')
+              && d.disbursedOn <= d.onboardedOn
+              && d.firstDueDate >= d.disbursedOn
+              && civilTs(d.firstDueDate) <= civilTs(d.disbursedOn) + duration.value(366, 'd')
+              && (d.get('previousRef', null) == null
+                  || (d.previousRef is string && d.previousRef.size() <= 40));
         }
 
         allow read: if member(cid);
@@ -273,7 +310,8 @@ service cloud.firestore {
 
         allow update: if
           (owner(cid)
-            && !affectedKeys().hasAny(['createdBy', 'createdAt'])
+            // origin / onboardedOn / disbursedOn are immutable (Sprint 7b).
+            && !affectedKeys().hasAny(['createdBy', 'createdAt', 'origin', 'onboardedOn', 'disbursedOn'])
             && request.resource.data.status in contractStatuses()
             && isInt(request.resource.data.sanctionedPaise)
             && isInt(request.resource.data.upfrontPaise)
@@ -345,10 +383,31 @@ service cloud.firestore {
         }
 
         allow read: if member(cid);
+        // Onboarding tx (Sprint 7b): owner only, on an onboarded contract that
+        // exists once this batch applies (chunk 1 creates it), dated within
+        // [contract.disbursedOn, contract.onboardedOn] and not after IST
+        // tomorrow; payments and reversals must carry a cash mode.
+        function onboardingTx(d) {
+          let c = getAfter(/databases/$(database)/documents/companies/$(cid)/contracts/$(d.contractId)).data;
+          return d.origin == 'onboarding'
+              && owner(cid)
+              && d.type in ['disbursement', 'payment', 'reversal']
+              && c.get('origin', 'standard') == 'onboarded'
+              && d.paidOn >= c.disbursedOn && d.paidOn <= c.onboardedOn
+              && notFutureIst(d.paidOn)
+              && (d.type == 'disbursement' || d.get('mode', null) in ['upi', 'cash', 'bank'])
+              && d.get('openingBalance', false) is bool;
+        }
+
         allow create: if member(cid)
           && stamped()
           && validNewTx(request.resource.data)
-          && (request.resource.data.type in ['payment', 'reschedule'] || owner(cid));
+          && (request.resource.data.type in ['payment', 'reschedule'] || owner(cid))
+          // Live txs (origin absent or 'live') keep their rules, with no date
+          // window by design, and never carry the opening-balance marker.
+          && ((request.resource.data.get('origin', 'live') == 'live'
+                && request.resource.data.get('openingBalance', false) == false)
+              || onboardingTx(request.resource.data));
         allow update: if member(cid)
           && onlyChanged(['contractActive'])
           && request.resource.data.contractActive is bool;

@@ -28,6 +28,18 @@ abstract class Contract with _$Contract {
     // Lifecycle.
     @Default(ContractStatus.active) ContractStatus status,
 
+    // Origin (immutable after create).
+    /// `onboarded` for an existing loan entered with its original dates.
+    @JsonKey(unknownEnumValue: ContractOrigin.standard)
+    @Default(ContractOrigin.standard)
+    ContractOrigin origin,
+
+    /// IST date of the onboarding save (set only when onboarded).
+    @NullableCivilDateConverter() CivilDate? onboardedOn,
+
+    /// The paper / old-system loan number (at most 40 characters).
+    String? previousRef,
+
     // Amounts.
     /// Repayable principal.
     @MoneyPaiseConverter()
@@ -101,6 +113,8 @@ abstract class Contract with _$Contract {
   const Contract._();
 
   bool get isActive => status == ContractStatus.active;
+
+  bool get isOnboarded => origin == ContractOrigin.onboarded;
 
   factory Contract.fromJson(Map<String, dynamic> json) =>
       _$ContractFromJson(json);

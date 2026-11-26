@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/errors/app_failure.dart';
+import '../../../core/firebase/chunked_batch.dart' show maxOpsPerBatch;
 import '../../../core/firebase/converters.dart';
 import '../../../core/firebase/firestore_paths.dart';
 import '../../../core/firebase/write_outcome.dart';
@@ -10,8 +11,10 @@ import '../../../core/time/civil_date.dart';
 import '../../../core/time/ist_clock.dart';
 import '../../../domain/ledger/ledger.dart';
 import '../../../domain/models/models.dart';
+import 'onboarding_plan.dart';
 
 export '../../../core/firebase/write_outcome.dart';
+export 'onboarding_plan.dart';
 
 /// Who is writing: stamped on every ledger doc.
 final class LedgerActor {
@@ -204,7 +207,11 @@ NewContractPlan planNewContract({
   required Uuid uuid,
   Money? netDisbursed,
   String? rolledOverFromContractId,
+  ContractOrigin origin = ContractOrigin.standard,
+  CivilDate? onboardedOn,
+  String? previousRef,
 }) {
+  final onboarded = origin == ContractOrigin.onboarded;
   final weekday = cmd.frequency == Frequency.weekly
       ? cmd.preferredWeekday
       : null;
@@ -235,6 +242,9 @@ NewContractPlan planNewContract({
     borrowerPhoneE164: borrowerPhoneE164,
     loanNo: loanNo,
     purpose: optionalText(cmd.purpose),
+    origin: origin,
+    onboardedOn: onboarded ? onboardedOn : null,
+    previousRef: onboarded ? optionalText(previousRef) : null,
     sanctioned: cmd.sanctioned,
     upfrontMode: cmd.upfrontMode,
     upfrontInput: cmd.upfrontInput,
@@ -285,6 +295,7 @@ NewContractPlan planNewContract({
             amount: net,
             paidOn: cmd.disbursedOn,
             relatedContractId: rolledOverFromContractId,
+            origin: onboarded ? TxOrigin.onboarding : TxOrigin.live,
             recordedBy: uid,
             recordedByName: cmd.actor.name,
             clientRecordedAt: now,
@@ -309,6 +320,7 @@ class ContractRepository {
     required Clock clock,
     Uuid uuid = const Uuid(),
     this.commitGrace = const Duration(seconds: 2),
+    this.batchLimit = maxOpsPerBatch,
   }) : _db = firestore,
        _refs = TypedRefs(firestore),
        _clock = clock,
@@ -319,6 +331,9 @@ class ContractRepository {
   final Clock _clock;
   final Uuid _uuid;
   final Duration commitGrace;
+
+  /// Ops per batch for the chunked onboarding write.
+  final int batchLimit;
 
   /// Validates the terms, then writes the contract, its N base
   /// installments, the disbursement transaction and the company's
@@ -346,6 +361,44 @@ class ContractRepository {
       'nextLoanNo': FieldValue.increment(1),
     });
     return _commit(batch, plan.contract.id, 'contract create');
+  }
+
+  /// Owner only: onboards an existing, in-progress loan. Writes the
+  /// contract (origin onboarded, original dates), its N base installments,
+  /// the disbursement dated on the original `disbursedOn`, the company's
+  /// `nextLoanNo` increment and every past payment (origin onboarding), in
+  /// 1–4 balanced [WriteBatch]es: each batch's `totalPaidPaise` increment
+  /// equals Σ of the payments in that batch. Throws
+  /// [PermissionDeniedFailure] / [ValidationFailure] (first error).
+  Future<LedgerWriteResult> onboardContract(OnboardContractCommand cmd) {
+    if (cmd.role != Role.owner) {
+      return Future<LedgerWriteResult>.error(const PermissionDeniedFailure());
+    }
+    final errors = validateOnboardCommand(cmd);
+    if (errors.isNotEmpty) {
+      return Future<LedgerWriteResult>.error(
+        ValidationFailure(errors.first.field, errors.first.message),
+      );
+    }
+    final b = cmd.borrower;
+    final plan = planOnboarding(
+      terms: cmd,
+      pastPayments: cmd.pastPayments,
+      today: cmd.today,
+      previousRef: cmd.previousRef,
+      contractId: _uuid.v4(),
+      borrowerId: b.id,
+      borrowerName: b.name,
+      borrowerPhoneE164: b.phoneE164,
+      now: _clock.nowIst().toUtc(),
+      uuid: _uuid,
+    );
+    final chunks = plan.chunks(_db, cmd.cid, limit: batchLimit);
+    return awaitServerAck(
+      chunks.commit(),
+      commitGrace,
+      'onboarding',
+    ).then((WriteOutcome o) => LedgerWriteResult(plan.contract.id, o));
   }
 
   /// Moves `cmd.amount` of the source installment to `cmd.newDueDate`:

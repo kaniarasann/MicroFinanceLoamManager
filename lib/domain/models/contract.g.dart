@@ -16,6 +16,17 @@ _Contract _$ContractFromJson(Map<String, dynamic> json) => _Contract(
   status:
       $enumDecodeNullable(_$ContractStatusEnumMap, json['status']) ??
       ContractStatus.active,
+  origin:
+      $enumDecodeNullable(
+        _$ContractOriginEnumMap,
+        json['origin'],
+        unknownValue: ContractOrigin.standard,
+      ) ??
+      ContractOrigin.standard,
+  onboardedOn: const NullableCivilDateConverter().fromJson(
+    json['onboardedOn'] as String?,
+  ),
+  previousRef: json['previousRef'] as String?,
   sanctioned: const MoneyPaiseConverter().fromJson(
     (json['sanctionedPaise'] as num).toInt(),
   ),
@@ -76,6 +87,11 @@ Map<String, dynamic> _$ContractToJson(_Contract instance) => <String, dynamic>{
   'loanNo': instance.loanNo,
   'purpose': instance.purpose,
   'status': _$ContractStatusEnumMap[instance.status]!,
+  'origin': _$ContractOriginEnumMap[instance.origin]!,
+  'onboardedOn': const NullableCivilDateConverter().toJson(
+    instance.onboardedOn,
+  ),
+  'previousRef': instance.previousRef,
   'sanctionedPaise': const MoneyPaiseConverter().toJson(instance.sanctioned),
   'upfrontMode': _$UpfrontModeEnumMap[instance.upfrontMode]!,
   'upfrontInput': instance.upfrontInput,
@@ -116,6 +132,11 @@ const _$ContractStatusEnumMap = {
   ContractStatus.closed: 'closed',
   ContractStatus.rolledOver: 'rolledOver',
   ContractStatus.cancelled: 'cancelled',
+};
+
+const _$ContractOriginEnumMap = {
+  ContractOrigin.standard: 'standard',
+  ContractOrigin.onboarded: 'onboarded',
 };
 
 const _$UpfrontModeEnumMap = {

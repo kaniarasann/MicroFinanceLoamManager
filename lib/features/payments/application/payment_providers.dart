@@ -200,4 +200,24 @@ class PaymentActions {
           ),
         );
   }
+
+  /// Owner only: reverse every unreversed opening-balance payment of an
+  /// onboarded contract (each dated on its original date).
+  Future<PaymentWriteResult> reverseOpeningBalance({
+    required ContractView view,
+    required String reason,
+  }) async {
+    final actor = await readLedgerActor(_ref);
+    return _ref
+        .read(paymentRepositoryProvider)
+        .reverseOpeningBalance(
+          ReverseOpeningCommand(
+            cid: requireActiveCid(_ref),
+            snapshot: view.snapshot,
+            reason: reason,
+            actor: actor,
+            role: _ref.read(currentRoleProvider),
+          ),
+        );
+  }
 }

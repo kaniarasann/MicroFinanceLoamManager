@@ -32,6 +32,15 @@ abstract class LedgerTransaction with _$LedgerTransaction {
     /// Rollover counterpart.
     String? relatedContractId,
     Map<String, dynamic>? rescheduleInfo,
+
+    /// `onboarding` on the docs written by loan onboarding and on reversals
+    /// of them. Immutable.
+    @JsonKey(unknownEnumValue: TxOrigin.live)
+    @Default(TxOrigin.live)
+    TxOrigin origin,
+
+    /// True on the payments an onboarding opening total was spread into.
+    @Default(false) bool openingBalance,
     required String recordedBy,
     required String recordedByName,
 
@@ -47,6 +56,8 @@ abstract class LedgerTransaction with _$LedgerTransaction {
 
   /// [recordedAt], falling back to [clientRecordedAt] while pending.
   DateTime get effectiveRecordedAt => recordedAt ?? clientRecordedAt;
+
+  bool get isOnboarding => origin == TxOrigin.onboarding;
 
   factory LedgerTransaction.fromJson(Map<String, dynamic> json) =>
       _$LedgerTransactionFromJson(json);

@@ -4,6 +4,7 @@ library;
 
 export 'borrower_summary.dart';
 export 'contract_projection.dart';
+export 'onboarding.dart';
 export 'overdue_tracker.dart';
 export 'portfolio_metrics.dart';
 export 'rollover_calculator.dart';

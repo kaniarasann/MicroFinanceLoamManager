@@ -114,7 +114,7 @@ describe('Sprint 5: updateBorrower', () => {
     await assertSucceeds(updateDoc(doc(as('ravi'), path('existing')), updatePatch()));
   });
   it('owner changing createdAt: denied', async () => {
-    await assertFails(updateDoc(doc(as('ravi'), path('existing')), { ...updatePatch(), createdAt: Timestamp.now() }));
+    await assertFails(updateDoc(doc(as('ravi'), path('existing')), { ...updatePatch(), createdAt: Timestamp.fromMillis(Date.now() + 60_000) }));
   });
   it('collector: denied', async () => {
     await assertFails(updateDoc(doc(as('meena'), path('existing')), updatePatch()));

@@ -39,5 +39,17 @@ enum TxType {
 @JsonEnum()
 enum PaymentMode { upi, cash, bank }
 
+/// How a contract entered the ledger: `standard` = created in the app
+/// (`new` is a reserved word), `onboarded` = an existing, in-progress loan
+/// entered with its original dates. A missing field reads as `standard`.
+@JsonEnum()
+enum ContractOrigin { standard, onboarded }
+
+/// Whether a transaction was recorded live or written by loan onboarding
+/// (its disbursement and past payments, and reversals of those). A
+/// missing field reads as `live`.
+@JsonEnum()
+enum TxOrigin { live, onboarding }
+
 @JsonEnum()
 enum InviteStatus { pending, accepted, revoked }

@@ -37,6 +37,23 @@ abstract final class LedgerFields {
   static const String firstDueDate = 'firstDueDate';
   static const String amount = 'amount';
   static const String newDueDate = 'newDueDate';
+
+  // Onboarding an existing loan.
+  static const String disbursedOn = 'disbursedOn';
+  static const String pastPayments = 'pastPayments';
+  static const String openingTotal = 'openingTotal';
+  static const String previousRef = 'previousRef';
+
+  /// Field of an error on itemised past payment [index] (0-based, in the
+  /// order the payments were passed): `pastPayments.3`.
+  static String pastPayment(int index) => '$pastPayments.$index';
+
+  /// The row index of a [pastPayment] field, or null for any other field.
+  static int? pastPaymentIndex(String field) {
+    const prefix = '$pastPayments.';
+    if (!field.startsWith(prefix)) return null;
+    return int.tryParse(field.substring(prefix.length));
+  }
 }
 
 /// Validates new-contract terms. Returns every failure (empty = valid).

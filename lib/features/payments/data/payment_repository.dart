@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/errors/app_failure.dart';
+import '../../../core/firebase/balanced_chunks.dart';
 import '../../../core/firebase/chunked_batch.dart';
 import '../../../core/firebase/converters.dart';
 import '../../../core/firebase/firestore_paths.dart';
@@ -125,6 +126,40 @@ final class ReversePaymentCommand {
   final String reason;
   final CivilDate today;
   final LedgerActor actor;
+}
+
+/// Reverse every unreversed opening-balance payment of an onboarded
+/// contract in one action (owner only).
+final class ReverseOpeningCommand {
+  const ReverseOpeningCommand({
+    required this.cid,
+    required this.snapshot,
+    required this.reason,
+    required this.actor,
+    required this.role,
+  });
+
+  final String cid;
+  final ContractSnapshot snapshot;
+  final String reason;
+  final LedgerActor actor;
+
+  /// The caller's role in the company; only an owner may reverse.
+  final Role? role;
+}
+
+/// The opening-balance payments of [snap]'s contract that have no reversal
+/// yet (what "Reverse opening balance" would reverse).
+List<LedgerTransaction> unreversedOpeningBalance(ContractSnapshot snap) {
+  final reversed = snap.reversedIds;
+  return <LedgerTransaction>[
+    for (final t in snap.transactions)
+      if (t.contractId == snap.contract.id &&
+          t.type == TxType.payment &&
+          t.openingBalance &&
+          !reversed.contains(t.id))
+        t,
+  ];
 }
 
 /// Result of a payment: the new transaction id, the ack outcome, whether
@@ -257,7 +292,7 @@ class PaymentRepository {
           },
         ),
       );
-    if (closes) _flipActive(out, cmd.cid, snap, active: false);
+    if (closes) _flipActive(out.spill, cmd.cid, snap, active: false);
     return _commit(out, txId, 'payment', closed: closes, balanceAfter: after);
   }
 
@@ -384,7 +419,7 @@ class PaymentRepository {
           },
         ),
       );
-    _flipActive(out, cmd.cid, snap, active: false);
+    _flipActive(out.spill, cmd.cid, snap, active: false);
     return awaitServerAck(out.commit(), commitGrace, 'waiver').then(
       (WriteOutcome o) =>
           WaiverWriteResult(paymentId: payId, waiverId: waiverId, outcome: o),
@@ -447,10 +482,14 @@ class PaymentRepository {
             contractActive: activeAfter,
             type: TxType.reversal,
             amount: original.amount,
-            paidOn: cmd.today,
+            // An onboarding correction is dated on the original date, so
+            // history is fixed in place and today's figures never go
+            // negative. Live reversals are dated today.
+            paidOn: original.isOnboarding ? original.paidOn : cmd.today,
             mode: original.mode,
             note: reason,
             reversesTxId: original.id,
+            origin: original.origin,
             recordedBy: cmd.actor.uid,
             recordedByName: cmd.actor.name,
             clientRecordedAt: now,
@@ -472,7 +511,7 @@ class PaymentRepository {
           },
         ),
       );
-    if (reopens) _flipActive(out, cmd.cid, snap, active: true);
+    if (reopens) _flipActive(out.spill, cmd.cid, snap, active: true);
     return _commit(
       out,
       txId,
@@ -482,10 +521,105 @@ class PaymentRepository {
     );
   }
 
+  /// Owner only: reverses every unreversed opening-balance payment of the
+  /// contract ([unreversedOpeningBalance]). Each reversal is dated on its
+  /// original's `paidOn`, copies its mode and `origin: onboarding`, and has
+  /// the reason as its note. Written as balanced batches: each holds at
+  /// most `limit − 1` reversals plus `totalPaidPaise: increment(−Σ)` for
+  /// exactly those. A closed contract that has a balance again reopens.
+  /// The result id is the first reversal's. Throws
+  /// [PermissionDeniedFailure] / [ValidationFailure].
+  Future<PaymentWriteResult> reverseOpeningBalance(ReverseOpeningCommand cmd) {
+    Future<PaymentWriteResult> fail(AppFailure f) =>
+        Future<PaymentWriteResult>.error(f);
+    if (cmd.role != Role.owner) return fail(const PermissionDeniedFailure());
+    final snap = cmd.snapshot;
+    final c = snap.contract;
+    final targets = unreversedOpeningBalance(snap);
+    if (targets.isEmpty) {
+      return fail(
+        const ValidationFailure(
+          LedgerFields.amount,
+          'There is no opening balance left to reverse.',
+        ),
+      );
+    }
+    final reason = optionalText(cmd.reason);
+    if (reason == null) {
+      return fail(
+        const ValidationFailure(
+          reversalReasonField,
+          'Enter a reason for the reversal.',
+        ),
+      );
+    }
+
+    final now = _clock.nowIst().toUtc();
+    final total = Money.sum(targets.map((LedgerTransaction t) => t.amount));
+    final poolAfter = paidPool(c.id, snap.transactions) - total;
+    final reopens =
+        c.status == ContractStatus.closed && poolAfter < c.sanctioned;
+    final activeAfter = c.isActive || reopens;
+    final contractRef = _db.doc(FirestorePaths.contract(cmd.cid, c.id));
+    Map<String, Object?> decrement(Money sum) => <String, Object?>{
+      'totalPaidPaise': FieldValue.increment(-sum.paise),
+      'updatedAt': Timestamp.fromDate(now),
+    };
+    final out = BalancedChunks(
+      _db,
+      limit: batchLimit,
+      firstBalance: (WriteBatch b, Money sum) =>
+          b.update(contractRef, <String, Object?>{
+            ...decrement(sum),
+            if (reopens) 'status': ContractStatus.active.name,
+            if (reopens) 'closedAt': null,
+          }),
+      laterBalance: (WriteBatch b, Money sum) =>
+          b.update(contractRef, decrement(sum)),
+    );
+    String? firstId;
+    for (final original in targets) {
+      final txId = _uuid.v4();
+      firstId ??= txId;
+      final reversal = LedgerTransaction(
+        id: txId,
+        contractId: c.id,
+        borrowerId: c.borrowerId,
+        borrowerName: c.borrowerName,
+        loanNo: c.loanNo,
+        contractActive: activeAfter,
+        type: TxType.reversal,
+        amount: original.amount,
+        paidOn: original.paidOn,
+        mode: original.mode,
+        note: reason,
+        reversesTxId: original.id,
+        origin: TxOrigin.onboarding,
+        recordedBy: cmd.actor.uid,
+        recordedByName: cmd.actor.name,
+        clientRecordedAt: now,
+        deviceId: cmd.actor.deviceId,
+      );
+      out.item(
+        (WriteBatch b) => b.set(_refs.transaction(cmd.cid, txId), reversal),
+        original.amount,
+      );
+    }
+    if (reopens) _flipActive(out.spill, cmd.cid, snap, active: true);
+    return awaitServerAck(out.commit(), commitGrace, 'opening reversal').then(
+      (WriteOutcome o) => PaymentWriteResult(
+        firstId!,
+        o,
+        closed: false,
+        balanceAfter: c.sanctioned - poolAfter,
+      ),
+    );
+  }
+
   /// `contractActive: [active]` on every installment and transaction of
-  /// the contract whose flag differs (spill ops).
+  /// the contract whose flag differs (spill ops, added through [spill]).
   void _flipActive(
-    ChunkedBatch out,
+    void Function(BatchOp op) spill,
     String cid,
     ContractSnapshot snap, {
     required bool active,
@@ -493,14 +627,14 @@ class PaymentRepository {
     final value = <String, Object?>{'contractActive': active};
     for (final i in snap.installments) {
       if (i.contractActive == active) continue;
-      out.spill(
+      spill(
         (WriteBatch b) =>
             b.update(_db.doc(FirestorePaths.installment(cid, i.id)), value),
       );
     }
     for (final t in snap.transactions) {
       if (t.contractActive == active) continue;
-      out.spill(
+      spill(
         (WriteBatch b) =>
             b.update(_db.doc(FirestorePaths.transaction(cid, t.id)), value),
       );

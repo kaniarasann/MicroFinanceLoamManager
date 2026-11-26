@@ -25,6 +25,14 @@ _LedgerTransaction _$LedgerTransactionFromJson(Map<String, dynamic> json) =>
       reversesTxId: json['reversesTxId'] as String?,
       relatedContractId: json['relatedContractId'] as String?,
       rescheduleInfo: json['rescheduleInfo'] as Map<String, dynamic>?,
+      origin:
+          $enumDecodeNullable(
+            _$TxOriginEnumMap,
+            json['origin'],
+            unknownValue: TxOrigin.live,
+          ) ??
+          TxOrigin.live,
+      openingBalance: json['openingBalance'] as bool? ?? false,
       recordedBy: json['recordedBy'] as String,
       recordedByName: json['recordedByName'] as String,
       recordedAt: json['recordedAt'] == null
@@ -51,6 +59,8 @@ Map<String, dynamic> _$LedgerTransactionToJson(_LedgerTransaction instance) =>
       'reversesTxId': instance.reversesTxId,
       'relatedContractId': instance.relatedContractId,
       'rescheduleInfo': instance.rescheduleInfo,
+      'origin': _$TxOriginEnumMap[instance.origin]!,
+      'openingBalance': instance.openingBalance,
       'recordedBy': instance.recordedBy,
       'recordedByName': instance.recordedByName,
       'recordedAt': instance.recordedAt?.toIso8601String(),
@@ -72,4 +82,9 @@ const _$PaymentModeEnumMap = {
   PaymentMode.upi: 'upi',
   PaymentMode.cash: 'cash',
   PaymentMode.bank: 'bank',
+};
+
+const _$TxOriginEnumMap = {
+  TxOrigin.live: 'live',
+  TxOrigin.onboarding: 'onboarding',
 };
