@@ -16,7 +16,8 @@ const int maxOnboardBackdateDays = 1096;
 /// "First collection date" is at most this many days after disbursement.
 const int maxFirstDueAfterDisbursalDays = 366;
 
-/// Most past payments one onboarding may write (keeps it to ≤ 4 batches).
+/// Most past payments one onboarding may write (up to 12 batches of ≤ 100
+/// payments, see `maxLedgerItemsPerBatch`).
 const int maxPastPayments = 1100;
 
 /// Longest previous (paper / old-system) loan reference.
@@ -225,14 +226,15 @@ List<PlannedInstallment> _dueUpTo(
         return byDate != 0 ? byDate : a.seq.compareTo(b.seq);
       });
 
-/// Spreads an opening total over the base [schedule] rows due on or before
-/// [today], oldest first: each covered row gets one payment of
+/// Spreads an opening total over the base [schedule] rows due strictly
+/// before [today], oldest first: each covered row gets one payment of
 /// `min(left, row amount)` dated on its due date, until [total] is used.
-/// Anything left after the last row due by today (an advance) is one more
-/// payment dated on `max(disbursedOn, that row's due date)`, or on
-/// [disbursedOn] when no row is due yet, so it never lands on today unless
-/// a row is due today. Every payment has [mode] and `openingBalance`.
-/// A [total] ≤ ₹0 gives no payments.
+/// A row due today stays open for live collection (user decision
+/// 2026-11-26). Anything left after the last row due before today (an
+/// advance) is one more payment dated on `max(disbursedOn, that row's due
+/// date)`, or on [disbursedOn] when no row is due before today, so nothing
+/// lands on today unless the loan was disbursed today. Every payment has
+/// [mode] and `openingBalance`. A [total] ≤ ₹0 gives no payments.
 ///
 /// FIFO allocation ignores dates, so the projection over these payments
 /// equals the projection over one payment of [total].
@@ -247,7 +249,7 @@ List<PastPaymentInput> spreadOpeningTotal({
   final out = <PastPaymentInput>[];
   var left = total;
   CivilDate? lastDue;
-  for (final row in _dueUpTo(schedule, today)) {
+  for (final row in _dueUpTo(schedule, today.addDays(-1))) {
     if (!left.isPositive) break;
     final amount = Money.min(left, row.amount);
     out.add(
@@ -291,8 +293,9 @@ List<PastPaymentInput> fillFromSchedule({
 /// next to its fixed docs, every later batch for [laterRoom]. Always at
 /// least one batch (the first may hold 0 items).
 ///
-/// Onboarding: `firstRoom = 450 − (contract + N installments +
-/// disbursement + company)`, `laterRoom = 449` (+ 1 contract increment).
+/// Onboarding: `firstRoom = 450 − (contract + disbursement + company +
+/// N installments)`, since the installments go in batch 1 first;
+/// `laterRoom = 449` (+ 1 contract increment).
 List<int> balancedChunkSizes({
   required int items,
   required int firstRoom,

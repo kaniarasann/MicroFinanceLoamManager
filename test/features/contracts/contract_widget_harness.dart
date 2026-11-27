@@ -1,6 +1,7 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:nordic_ledger/core/theme/app_theme.dart';
@@ -9,6 +10,7 @@ import 'package:nordic_ledger/domain/models/models.dart';
 import 'package:nordic_ledger/features/contracts/presentation/screens/contract_detail_screen.dart';
 import 'package:nordic_ledger/features/contracts/presentation/screens/contract_placeholder_screen.dart';
 import 'package:nordic_ledger/features/contracts/presentation/screens/create_contract_screen.dart';
+import 'package:nordic_ledger/features/contracts/presentation/screens/onboard_contract_screen.dart';
 
 import 'contract_test_support.dart';
 
@@ -25,6 +27,7 @@ Future<FakeFirebaseFirestore> pumpContracts(
   LedgerSeed? seed,
   CivilDate? today,
   double textScale = 1,
+  List<Override> extraOverrides = const <Override>[],
 }) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = Size(width, height);
@@ -49,6 +52,12 @@ Future<FakeFirebaseFirestore> pumpContracts(
         ),
       ),
       GoRoute(
+        path: '/contracts/onboard',
+        builder: (BuildContext c, GoRouterState s) => OnboardContractScreen(
+          borrowerId: s.uri.queryParameters['borrowerId'],
+        ),
+      ),
+      GoRoute(
         path: '/contracts/:id',
         builder: (BuildContext c, GoRouterState s) =>
             ContractDetailScreen(contractId: s.pathParameters['id']!),
@@ -67,7 +76,10 @@ Future<FakeFirebaseFirestore> pumpContracts(
   addTearDown(router.dispose);
   await tester.pumpWidget(
     ProviderScope(
-      overrides: contractOverrides(db, role: role, today: today),
+      overrides: <Override>[
+        ...contractOverrides(db, role: role, today: today),
+        ...extraOverrides,
+      ],
       child: MaterialApp.router(
         theme: AppTheme.light,
         routerConfig: router,

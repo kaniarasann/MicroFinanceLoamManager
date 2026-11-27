@@ -393,8 +393,8 @@ void main() {
       expect(out.single.amount, rs(7000));
     });
 
-    test('E4 (design note) a row due today is covered on today, so it does '
-        'reach received-today', () {
+    test('E4 (user decision 2026-11-26) a row due today stays open: nothing '
+        'is dated today, so received-today is untouched', () {
       // Tuesdays from 10 Nov: 10 Nov, 17 Nov, 24 Nov (today).
       final s = _weeklySchedule(firstDue: d(2026, 11, 10));
       final out = spreadOpeningTotal(
@@ -404,7 +404,12 @@ void main() {
         disbursedOn: d(2026, 11, 3),
         today: _today,
       );
-      expect(out.last.paidOn, _today);
+      expect(out.any((PastPaymentInput p) => p.paidOn == _today), isFalse);
+      // 10 Nov + 17 Nov covered; the ₹10,000 beyond them is an advance on
+      // the last due date before today.
+      expect(out, hasLength(3));
+      expect(out.last.paidOn, d(2026, 11, 17));
+      expect(out.last.amount, rs(10000));
     });
   });
 

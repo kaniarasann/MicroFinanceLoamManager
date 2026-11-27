@@ -6,6 +6,7 @@ import '../../../core/firebase/balanced_chunks.dart';
 import '../../../core/firebase/chunked_batch.dart';
 import '../../../core/firebase/converters.dart';
 import '../../../core/firebase/firestore_paths.dart';
+import '../../../core/money/inr_format.dart';
 import '../../../core/money/money.dart';
 import '../../../core/time/civil_date.dart';
 import '../../../core/time/ist_clock.dart';
@@ -69,6 +70,40 @@ final class RecordPaymentCommand {
   String get contractId => snapshot.contract.id;
 }
 
+/// Add one past payment missing from a partly synced onboarding (owner
+/// only).
+final class AddOnboardingPaymentCommand {
+  const AddOnboardingPaymentCommand({
+    required this.cid,
+    required this.snapshot,
+    required this.amount,
+    required this.paidOn,
+    required this.mode,
+    required this.actor,
+    required this.role,
+    this.reference,
+    this.openingBalance = false,
+  });
+
+  final String cid;
+  final ContractSnapshot snapshot;
+  final Money amount;
+
+  /// Within [contract.disbursedOn, contract.onboardedOn].
+  final CivilDate paidOn;
+  final PaymentMode mode;
+  final LedgerActor actor;
+
+  /// The caller's role in the company; only an owner may add it.
+  final Role? role;
+  final String? reference;
+
+  /// Part of an opening-total spread: written with `openingBalance: true`
+  /// and the "Opening balance" note, so "Reverse opening balance" also
+  /// covers it. False for itemised loans.
+  final bool openingBalance;
+}
+
 /// Close a loan for less than its outstanding (owner only): [cashAmount]
 /// received plus [waiverAmount] waived must equal the outstanding exactly.
 final class CloseWithWaiverCommand {
@@ -128,6 +163,78 @@ final class ReversePaymentCommand {
   final LedgerActor actor;
 }
 
+/// Cancel a wrongly onboarded loan (owner only): reverse every onboarding
+/// payment, then set the contract `cancelled`.
+final class CancelOnboardedCommand {
+  const CancelOnboardedCommand({
+    required this.cid,
+    required this.snapshot,
+    required this.reason,
+    required this.actor,
+    required this.role,
+    this.queuePending = false,
+  });
+
+  final String cid;
+  final ContractSnapshot snapshot;
+  final String reason;
+  final LedgerActor actor;
+  final Role? role;
+
+  /// The contract still has a pending sync list; it is marked cancelled in
+  /// the same batch as the status, so the resumer stops.
+  final bool queuePending;
+}
+
+/// Unreversed payments and waivers recorded after onboarding (origin
+/// live). Cancelling is refused while any exist: that cash is real.
+List<LedgerTransaction> liveEntriesBlockingCancel(ContractSnapshot snap) {
+  final reversed = snap.reversedIds;
+  return <LedgerTransaction>[
+    for (final t in snap.transactions)
+      if (t.contractId == snap.contract.id &&
+          !t.isOnboarding &&
+          (t.type == TxType.payment || t.type == TxType.waiver) &&
+          !reversed.contains(t.id))
+        t,
+  ];
+}
+
+/// Onboarding payments of [snap]'s contract without a reversal (what
+/// "Cancel onboarded loan" reverses).
+List<LedgerTransaction> unreversedOnboardingPayments(ContractSnapshot snap) {
+  final reversed = snap.reversedIds;
+  return <LedgerTransaction>[
+    for (final t in onboardingPayments(snap))
+      if (!reversed.contains(t.id)) t,
+  ];
+}
+
+/// A cancelled onboarded loan that still has unreversed onboarding
+/// payments: "Finish cancelling" reverses them (no status change).
+bool isCancelUnfinished(ContractSnapshot snap) =>
+    snap.contract.isOnboarded &&
+    snap.contract.status == ContractStatus.cancelled &&
+    unreversedOnboardingPayments(snap).isNotEmpty;
+
+/// Why "Cancel onboarded loan" is not available, or null when it is.
+String? cancelOnboardedBlocker(ContractSnapshot snap) {
+  final c = snap.contract;
+  if (!c.isOnboarded) return 'Only onboarded loans can be cancelled.';
+  // F2 (attempt 5): a cancelled loan whose onboarding payments are not all
+  // reversed yet (an interrupted or raced Cancel) can be finished.
+  if (c.status == ContractStatus.cancelled) {
+    return isCancelUnfinished(snap) ? null : 'This loan is already cancelled.';
+  }
+  if (c.status != ContractStatus.active && c.status != ContractStatus.closed) {
+    return 'This loan can no longer be cancelled.';
+  }
+  if (liveEntriesBlockingCancel(snap).isNotEmpty) {
+    return 'Reverse the payments recorded after onboarding first.';
+  }
+  return null;
+}
+
 /// Reverse every unreversed opening-balance payment of an onboarded
 /// contract in one action (owner only).
 final class ReverseOpeningCommand {
@@ -181,6 +288,141 @@ final class PaymentWriteResult {
 /// Field name for reversal validation errors.
 const String reversalReasonField = 'reason';
 
+/// Why entries of a contract in [status] can no longer be reversed, or
+/// null when they can. A rolled-over contract's balance was settled into
+/// its successor and a cancelled one is out of the books, so reversing
+/// there would reopen money that already moved.
+String? reversalLockedMessage(ContractStatus status) => switch (status) {
+  ContractStatus.rolledOver =>
+    'This loan was rolled over. Its entries can no longer be reversed.',
+  ContractStatus.cancelled =>
+    'This loan was cancelled. Its entries can no longer be reversed.',
+  ContractStatus.active || ContractStatus.closed => null,
+};
+
+/// Whether "Reverse" / "Reverse opening balance" are offered for a
+/// contract in [status].
+bool canReverseIn(ContractStatus status) =>
+    reversalLockedMessage(status) == null;
+
+/// Payments written by an onboarding (origin onboarding, type payment),
+/// reversed or not: what `Contract.onboardedPaymentCount` counted.
+/// Reversals are separate docs, so a correction never lowers this count.
+List<LedgerTransaction> onboardingPayments(ContractSnapshot snap) =>
+    <LedgerTransaction>[
+      for (final t in snap.transactions)
+        if (t.contractId == snap.contract.id &&
+            t.type == TxType.payment &&
+            t.isOnboarding)
+          t,
+    ];
+
+/// "Onboarding incomplete" state of an onboarded contract: how many of
+/// the payments the onboarding wrote (and how much cash) are on this
+/// device, against the immutable `onboardedPaymentCount` /
+/// `onboardedTotalPaise`. Null when the contract is not onboarded or
+/// carries no count (older docs).
+///
+/// Counts and sums are **gross**: reversed onboarding payments still
+/// count, because a reversal is a separate doc and the original was
+/// written by the onboarding (or a repair) all the same.
+final class OnboardingSync {
+  const OnboardingSync({
+    required this.synced,
+    required this.expected,
+    this.gross = Money.zero,
+    this.onboardedTotal,
+    this.isOpeningTotal,
+  });
+
+  final int synced;
+  final int expected;
+
+  /// Σ of every onboarding payment on this device, reversed or not.
+  final Money gross;
+
+  /// `onboardedTotalPaise`, or null on docs written before it existed.
+  final Money? onboardedTotal;
+
+  /// Whether the landed onboarding payments are an opening-total spread
+  /// (true), itemised (false), or null when none has landed.
+  final bool? isOpeningTotal;
+
+  /// Cash the onboarding wrote that is not on this device (≥ ₹0).
+  Money get missing {
+    final total = onboardedTotal;
+    if (total == null || gross >= total) return Money.zero;
+    return total - gross;
+  }
+
+  bool get isIncomplete => synced < expected || missing.isPositive;
+
+  /// More onboarding payments (or cash) than the onboarding wrote: a
+  /// repair that double-counted a batch that was only queued.
+  bool get isOvershoot {
+    final total = onboardedTotal;
+    return synced > expected || (total != null && gross > total);
+  }
+
+  /// How far the gross Σ is above `onboardedTotalPaise` (≥ ₹0).
+  Money get overshoot {
+    final total = onboardedTotal;
+    if (total == null || gross <= total) return Money.zero;
+    return gross - total;
+  }
+
+  /// The most a repair may add: [missing], capped at [outstanding].
+  Money repairCap(Money outstanding) => Money.min(missing, outstanding);
+
+  static OnboardingSync? of(ContractSnapshot snap) {
+    final expected = snap.contract.onboardedPaymentCount;
+    if (!snap.contract.isOnboarded || expected == null) return null;
+    final pays = onboardingPayments(snap);
+    return OnboardingSync(
+      synced: pays.length,
+      expected: expected,
+      gross: Money.sum(pays.map((LedgerTransaction t) => t.amount)),
+      onboardedTotal: snap.contract.onboardedTotal,
+      isOpeningTotal: pays.isEmpty
+          ? null
+          : pays.any((LedgerTransaction t) => t.openingBalance),
+    );
+  }
+}
+
+/// Default date of a repair payment: the first base due date after the
+/// newest landed onboarding payment that has no onboarding payment of its
+/// own (later batches hold the newest payments, so that is where the gap
+/// is), else the last base due date before [today], else `disbursedOn`.
+/// Always within [disbursedOn, onboardedOn] and never [today] unless the
+/// loan was disbursed today.
+CivilDate defaultRepairDate(ContractSnapshot snap, CivilDate today) {
+  final c = snap.contract;
+  final last = c.onboardedOn ?? today;
+  final paidDates = <CivilDate>{
+    for (final t in onboardingPayments(snap)) t.paidOn,
+  };
+  final dues = <CivilDate>{
+    for (final i in snap.installments)
+      if (i.kind == InstallmentKind.base &&
+          !i.dueDate.isBefore(c.disbursedOn) &&
+          i.dueDate.isBefore(today) &&
+          !i.dueDate.isAfter(last))
+        i.dueDate,
+  }.toList()..sort();
+  CivilDate? newest;
+  for (final p in paidDates) {
+    if (newest == null || p.isAfter(newest)) newest = p;
+  }
+  for (final due in dues) {
+    if ((newest == null || due.isAfter(newest)) && !paidDates.contains(due)) {
+      return due;
+    }
+  }
+  if (dues.isNotEmpty) return dues.last;
+  return c.disbursedOn;
+}
+
 /// Field names for close-with-waiver validation errors.
 const String waiverAmountField = 'waiverAmount';
 const String waiverReasonField = 'waiverReason';
@@ -212,6 +454,7 @@ class PaymentRepository {
     Uuid uuid = const Uuid(),
     this.commitGrace = const Duration(seconds: 2),
     this.batchLimit = maxOpsPerBatch,
+    this.batchMaxItems = maxLedgerItemsPerBatch,
   }) : _db = firestore,
        _refs = TypedRefs(firestore),
        _clock = clock,
@@ -223,6 +466,10 @@ class PaymentRepository {
   final Uuid _uuid;
   final Duration commitGrace;
   final int batchLimit;
+
+  /// Most reversals per "Reverse opening balance" batch (production rule
+  /// budget; see [maxLedgerItemsPerBatch]).
+  final int batchMaxItems;
 
   /// Appends a payment and increments `totalPaidPaise`. When the balance
   /// reaches ₹0 the contract closes and all its docs get
@@ -294,6 +541,122 @@ class PaymentRepository {
       );
     if (closes) _flipActive(out.spill, cmd.cid, snap, active: false);
     return _commit(out, txId, 'payment', closed: closes, balanceAfter: after);
+  }
+
+  /// Owner only: repairs a partly synced onboarding by adding one missing
+  /// past payment (`origin: onboarding`; an opening-balance row on an
+  /// opening-total loan) dated within [disbursedOn, onboardedOn]. The
+  /// amount is capped at `onboardedTotalPaise − Σ(gross onboarding
+  /// payments)` and at the outstanding, so a batch that is only queued on
+  /// the onboarding phone can never be double-counted past the onboarded
+  /// total. It increments `totalPaidPaise` and moves `lastPaymentOn` only
+  /// forward. When the balance reaches ₹0 the loan closes, as with any
+  /// payment. Throws [PermissionDeniedFailure] / [ValidationFailure].
+  Future<PaymentWriteResult> addOnboardingPayment(
+    AddOnboardingPaymentCommand cmd,
+  ) {
+    Future<PaymentWriteResult> fail(AppFailure f) =>
+        Future<PaymentWriteResult>.error(f);
+    if (cmd.role != Role.owner) return fail(const PermissionDeniedFailure());
+    final snap = cmd.snapshot;
+    final c = snap.contract;
+    final onboardedOn = c.onboardedOn;
+    if (!c.isOnboarded || onboardedOn == null || !c.isActive) {
+      return fail(
+        const ValidationFailure(
+          LedgerFields.amount,
+          'Only an open onboarded loan can take a missing onboarding '
+          'payment.',
+        ),
+      );
+    }
+    final outstanding = snap.outstanding;
+    final errors = validatePaymentAmount(cmd.amount, outstanding);
+    if (errors.isNotEmpty) {
+      return fail(ValidationFailure(errors.first.field, errors.first.message));
+    }
+    // Never add more than the onboarding wrote: a "missing" batch may
+    // only be queued on the onboarding phone (gross Σ, reversed included).
+    final sync = OnboardingSync.of(snap);
+    final cap = sync?.repairCap(outstanding) ?? Money.zero;
+    if (!cap.isPositive) {
+      return fail(
+        const ValidationFailure(
+          LedgerFields.amount,
+          'Nothing is missing from this onboarding.',
+        ),
+      );
+    }
+    if (cmd.amount > cap) {
+      return fail(
+        ValidationFailure(
+          LedgerFields.amount,
+          'At most ${formatInr(cap)} is missing from this onboarding.',
+        ),
+      );
+    }
+    if (cmd.paidOn.isBefore(c.disbursedOn) || cmd.paidOn.isAfter(onboardedOn)) {
+      return fail(
+        ValidationFailure(
+          LedgerFields.paidOn,
+          'Choose a date from ${formatCivilDate(c.disbursedOn)} to '
+          '${formatCivilDate(onboardedOn)} (the onboarding day).',
+        ),
+      );
+    }
+
+    final now = _clock.nowIst().toUtc();
+    final txId = _uuid.v4();
+    final after = outstanding - cmd.amount;
+    final closes = after.isZero;
+    final last = c.lastPaymentOn;
+    final moveLast = last == null || cmd.paidOn.isAfter(last);
+    final out = ChunkedBatch(_db, limit: batchLimit)
+      ..primary(
+        (WriteBatch b) => b.set(
+          _refs.transaction(cmd.cid, txId),
+          LedgerTransaction(
+            id: txId,
+            contractId: c.id,
+            borrowerId: c.borrowerId,
+            borrowerName: c.borrowerName,
+            loanNo: c.loanNo,
+            contractActive: !closes,
+            type: TxType.payment,
+            amount: cmd.amount,
+            paidOn: cmd.paidOn,
+            mode: cmd.mode,
+            reference: optionalText(cmd.reference),
+            note: cmd.openingBalance ? openingBalanceNote : null,
+            origin: TxOrigin.onboarding,
+            openingBalance: cmd.openingBalance,
+            recordedBy: cmd.actor.uid,
+            recordedByName: cmd.actor.name,
+            clientRecordedAt: now,
+            deviceId: cmd.actor.deviceId,
+          ),
+        ),
+      )
+      ..primary(
+        (WriteBatch b) => b.update(
+          _db.doc(FirestorePaths.contract(cmd.cid, c.id)),
+          <String, Object?>{
+            'totalPaidPaise': FieldValue.increment(cmd.amount.paise),
+            if (moveLast) 'lastPaymentOn': cmd.paidOn.toString(),
+            'updatedAt': Timestamp.fromDate(now),
+            if (closes) 'status': ContractStatus.closed.name,
+            if (closes) 'closedAt': Timestamp.fromDate(now),
+          },
+        ),
+      );
+    if (closes) _flipActive(out.spill, cmd.cid, snap, active: false);
+    return _commit(
+      out,
+      txId,
+      'onboarding payment',
+      closed: closes,
+      balanceAfter: after,
+    );
   }
 
   /// Owner only: closes an active loan for [CloseWithWaiverCommand.cashAmount]
@@ -443,6 +806,12 @@ class PaymentRepository {
       return Future<PaymentWriteResult>.error(const NotFoundFailure());
     }
     final isWaiver = original.type == TxType.waiver;
+    final locked = reversalLockedMessage(c.status);
+    if (locked != null) {
+      return Future<PaymentWriteResult>.error(
+        ValidationFailure(LedgerFields.amount, locked),
+      );
+    }
     if (snap.reversedIds.contains(original.id)) {
       return Future<PaymentWriteResult>.error(
         ValidationFailure(
@@ -525,8 +894,8 @@ class PaymentRepository {
   /// contract ([unreversedOpeningBalance]). Each reversal is dated on its
   /// original's `paidOn`, copies its mode and `origin: onboarding`, and has
   /// the reason as its note. Written as balanced batches: each holds at
-  /// most `limit − 1` reversals plus `totalPaidPaise: increment(−Σ)` for
-  /// exactly those. A closed contract that has a balance again reopens.
+  /// most `min(limit − 1, batchMaxItems)` (100) reversals plus
+  /// `totalPaidPaise: increment(−Σ)` for exactly those. A closed contract that has a balance again reopens.
   /// The result id is the first reversal's. Throws
   /// [PermissionDeniedFailure] / [ValidationFailure].
   Future<PaymentWriteResult> reverseOpeningBalance(ReverseOpeningCommand cmd) {
@@ -535,6 +904,10 @@ class PaymentRepository {
     if (cmd.role != Role.owner) return fail(const PermissionDeniedFailure());
     final snap = cmd.snapshot;
     final c = snap.contract;
+    final locked = reversalLockedMessage(c.status);
+    if (locked != null) {
+      return fail(ValidationFailure(LedgerFields.amount, locked));
+    }
     final targets = unreversedOpeningBalance(snap);
     if (targets.isEmpty) {
       return fail(
@@ -568,6 +941,7 @@ class PaymentRepository {
     final out = BalancedChunks(
       _db,
       limit: batchLimit,
+      maxItems: batchMaxItems,
       firstBalance: (WriteBatch b, Money sum) =>
           b.update(contractRef, <String, Object?>{
             ...decrement(sum),
@@ -613,6 +987,176 @@ class PaymentRepository {
         closed: false,
         balanceAfter: c.sanctioned - poolAfter,
       ),
+    );
+  }
+
+  /// Owner only: cancels a wrongly onboarded loan (the deferred "undo a
+  /// wrong onboarding"). Every unreversed onboarding payment gets a
+  /// reversal dated on its original `paidOn` (mode and origin copied,
+  /// reason as note), in balanced batches of at most [batchMaxItems] with
+  /// `totalPaidPaise: increment(−Σ)`. The last batch sets
+  /// `status: cancelled`, and every doc of the contract gets
+  /// `contractActive: false`. Batches are sent in order ([commitInOrder]).
+  ///
+  /// Race with a running resumer (attempt 5, F1):
+  /// 1. When a sync list is pending, its `→ cancelled` update is committed
+  ///    FIRST and its ack awaited; without an ack (offline) the cancel is
+  ///    refused ("Connect to the internet…"), so the resumer, which
+  ///    re-checks the queue before every batch, stops before anything else
+  ///    is written.
+  /// 2. The reversal targets come from a SERVER read of the contract's
+  ///    transactions (not the cached snapshot), so payments a resumer
+  ///    landed meanwhile are reversed too. The rules also deny any
+  ///    onboarding payment on a cancelled contract.
+  ///
+  /// Recovery (F2): on a contract that is already `cancelled` but still
+  /// has unreversed onboarding payments ([isCancelUnfinished]), this
+  /// writes the missing reversals only ("Finish cancelling"). If a run
+  /// fails half way, running it again finishes it. Refused while live
+  /// payments or waivers remain. Throws [PermissionDeniedFailure] /
+  /// [ValidationFailure].
+  Future<PaymentWriteResult> cancelOnboardedLoan(
+    CancelOnboardedCommand cmd,
+  ) async {
+    if (cmd.role != Role.owner) throw const PermissionDeniedFailure();
+    final cached = cmd.snapshot;
+    final c = cached.contract;
+    final blocked = cancelOnboardedBlocker(cached);
+    if (blocked != null) {
+      throw ValidationFailure(LedgerFields.amount, blocked);
+    }
+    final reason = optionalText(cmd.reason);
+    if (reason == null) {
+      throw const ValidationFailure(
+        reversalReasonField,
+        'Enter a reason for cancelling.',
+      );
+    }
+    const offlineMessage =
+        'Connect to the internet to cancel a loan that is still syncing.';
+    if (cmd.queuePending) {
+      try {
+        final o = await awaitServerAck(
+          _db
+              .doc(FirestorePaths.onboardingQueue(cmd.cid, c.id))
+              .update(<String, Object?>{
+                'status': OnboardingQueueStatus.cancelled.name,
+                'updatedAt': FieldValue.serverTimestamp(),
+              }),
+          commitGrace,
+          'cancel sync list',
+        );
+        if (o == WriteOutcome.queued) {
+          throw const ValidationFailure(LedgerFields.amount, offlineMessage);
+        }
+      } on PermissionDeniedFailure {
+        // The queue already finished (complete): every payment landed; the
+        // server read below sees them all.
+      }
+    }
+    // Targets from the server, so nothing a resumer landed is missed. A
+    // failed read is only acceptable when no sync list was pending.
+    var snap = cached;
+    try {
+      final server = await _refs
+          .transactions(cmd.cid)
+          .where('contractId', isEqualTo: c.id)
+          .get(const GetOptions(source: Source.server));
+      snap = ContractSnapshot(
+        contract: c,
+        installments: cached.installments,
+        transactions: <LedgerTransaction>[
+          for (final d in server.docs) d.data(),
+        ],
+      );
+    } on FirebaseException {
+      if (cmd.queuePending) {
+        throw const ValidationFailure(LedgerFields.amount, offlineMessage);
+      }
+    }
+    if (liveEntriesBlockingCancel(snap).isNotEmpty &&
+        c.status != ContractStatus.cancelled) {
+      throw const ValidationFailure(
+        LedgerFields.amount,
+        'Reverse the payments recorded after onboarding first.',
+      );
+    }
+    final finishing = c.status == ContractStatus.cancelled;
+    final now = _clock.nowIst().toUtc();
+    final contractRef = _db.doc(FirestorePaths.contract(cmd.cid, c.id));
+    final targets = unreversedOnboardingPayments(snap);
+    final room = batchMaxItems < batchLimit - 1
+        ? batchMaxItems
+        : batchLimit - 1;
+    final batches = <WriteBatch>[];
+    String? firstId;
+    for (final group in onboardingChunks(targets, maxItems: room)) {
+      final sum = Money.sum(group.map((LedgerTransaction t) => t.amount));
+      final b = _db.batch()
+        ..update(contractRef, <String, Object?>{
+          'totalPaidPaise': FieldValue.increment(-sum.paise),
+          'updatedAt': Timestamp.fromDate(now),
+        });
+      for (final original in group) {
+        final txId = _uuid.v4();
+        firstId ??= txId;
+        b.set(
+          _refs.transaction(cmd.cid, txId),
+          LedgerTransaction(
+            id: txId,
+            contractId: c.id,
+            borrowerId: c.borrowerId,
+            borrowerName: c.borrowerName,
+            loanNo: c.loanNo,
+            contractActive: false,
+            type: TxType.reversal,
+            amount: original.amount,
+            paidOn: original.paidOn,
+            mode: original.mode,
+            note: reason,
+            reversesTxId: original.id,
+            origin: TxOrigin.onboarding,
+            recordedBy: cmd.actor.uid,
+            recordedByName: cmd.actor.name,
+            clientRecordedAt: now,
+            deviceId: cmd.actor.deviceId,
+          ),
+        );
+      }
+      batches.add(b);
+    }
+    // The status (not when finishing an earlier cancel) and the
+    // contractActive flips (cheap rules), at most [batchLimit] ops per
+    // batch; the status goes first. The sync list was already cancelled
+    // above. Flips also run when finishing, so payments a racing resumer
+    // landed after the cancel leave the active listeners.
+    final tail = <BatchOp>[
+      if (!finishing)
+        (WriteBatch b) => b.update(contractRef, <String, Object?>{
+          'status': ContractStatus.cancelled.name,
+          'closedAt': Timestamp.fromDate(now),
+          'updatedAt': Timestamp.fromDate(now),
+        }),
+    ];
+    _flipActive(tail.add, cmd.cid, snap, active: false);
+    for (final ops in onboardingChunks(tail, maxItems: batchLimit)) {
+      if (ops.isEmpty) continue;
+      final b = _db.batch();
+      for (final op in ops) {
+        op(b);
+      }
+      batches.add(b);
+    }
+    final outcome = await awaitServerAck(
+      commitInOrder(batches),
+      commitGrace,
+      'cancel onboarded',
+    );
+    return PaymentWriteResult(
+      firstId ?? c.id,
+      outcome,
+      closed: true,
+      balanceAfter: Money.zero,
     );
   }
 

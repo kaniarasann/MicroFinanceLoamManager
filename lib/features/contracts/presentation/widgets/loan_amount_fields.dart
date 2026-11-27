@@ -27,6 +27,7 @@ class LoanAmountFields extends StatelessWidget {
     required this.draft,
     required this.showAllErrors,
     this.sanctionedLabel = 'Sanctioned amount',
+    this.upfrontHelperText,
     super.key,
   });
 
@@ -36,6 +37,9 @@ class LoanAmountFields extends StatelessWidget {
   /// After a submit attempt every error shows, touched or not.
   final bool showAllErrors;
   final String sanctionedLabel;
+
+  /// Helper under the upfront input (onboarding: "Unknown? Enter ₹0").
+  final String? upfrontHelperText;
 
   String? _show(String field, {required bool touched}) =>
       showAllErrors || touched ? draft.errorFor(field) : null;
@@ -97,6 +101,7 @@ class LoanAmountFields extends StatelessWidget {
             key: const ValueKey<String>('upfront_flat_field'),
             controller: terms.upfrontFlat,
             label: 'Upfront interest',
+            helperText: upfrontHelperText,
             errorText: _show(
               LedgerFields.upfrontInput,
               touched: terms.flatValue != null,
@@ -119,6 +124,7 @@ class LoanAmountFields extends StatelessWidget {
               labelText: 'Upfront interest',
               hintText: '0',
               suffixText: '%',
+              helperText: upfrontHelperText,
               errorText: _show(
                 LedgerFields.upfrontInput,
                 touched: terms.pctBps != null,

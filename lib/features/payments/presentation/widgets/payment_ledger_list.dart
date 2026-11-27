@@ -79,7 +79,7 @@ class PaymentLedgerList extends StatelessWidget {
     final isWaiver = t.type == TxType.waiver;
     final reason = t.note;
     final title = switch (t.type) {
-      TxType.payment => 'Payment',
+      TxType.payment => onboardingPaymentLabel(t) ?? 'Payment',
       TxType.rolloverSettlement => 'Rollover settlement',
       TxType.disbursement => 'Disbursed',
       TxType.waiver => <String>[

@@ -47,6 +47,8 @@ const Set<String> kContractKeys = <String>{
   'netDisbursedPaise',
   'notes',
   'onboardedOn',
+  'onboardedPaymentCount',
+  'onboardedTotalPaise',
   'origin',
   'preferredMonthDay',
   'preferredWeekday',
@@ -364,85 +366,123 @@ void main() {
   });
 
   group('R2 daily loan, 300 itemised payments', () {
-    test('2 balanced batches, totals, projection == plan preview', () async {
-      final cmd = daily(itemisedDaily(300, 100));
-      final plan = planOnboarding(
-        terms: cmd,
-        pastPayments: cmd.pastPayments,
-        today: _today,
-        contractId: 'preview',
-        borrowerId: 'b1',
-        borrowerName: 'Anita Sharma',
-        borrowerPhoneE164: '+919845012890',
-        now: DateTime.utc(2026, 11, 24),
-        uuid: const Uuid(),
-      );
-      final chunks = plan.chunks(db, kCid);
-      expect(chunks.batchCount, inInclusiveRange(1, 4));
-      expect(chunks.chunkSizes, <int>[81, 219]);
-      expect(chunks.opsPerBatch, <int>[450, 220]);
-      expect(chunks.chunkSums, <Money>[rs(8100), rs(21900)]);
-      expect(plan.totalCollected, rs(30000));
+    test(
+      'batch 1 + 3 resumed batches (attempt 4 sync list), totals, projection == plan preview',
+      () async {
+        final cmd = daily(itemisedDaily(300, 100));
+        final plan = planOnboarding(
+          terms: cmd,
+          pastPayments: cmd.pastPayments,
+          today: _today,
+          contractId: 'preview',
+          borrowerId: 'b1',
+          borrowerName: 'Anita Sharma',
+          borrowerPhoneE164: '+919845012890',
+          now: DateTime.utc(2026, 11, 24),
+          uuid: const Uuid(),
+        );
+        final chunks = plan.layout();
+        expect(chunks.batchCount, 4);
+        // Attempt 4: batch 1 also carries the queue doc, so 80 payments.
+        expect(chunks.chunkSizes, <int>[80, 100, 100, 20]);
+        expect(chunks.opsPerBatch, <int>[450, 101, 101, 21]);
+        expect(chunks.chunkSums, <Money>[
+          rs(8000),
+          rs(10000),
+          rs(10000),
+          rs(2000),
+        ]);
+        expect(plan.totalCollected, rs(30000));
 
-      final r = await contracts.onboardContract(cmd);
-      final c = await rawContract(db, r.id);
-      final pays = (await rawDocs(
-        db,
-        'transactions',
-        r.id,
-      )).where((m) => m['type'] == 'payment').toList();
-      expect(pays, hasLength(300));
-      final sum = pays.fold<int>(0, (s, m) => s + (m['amountPaise'] as int));
-      expect(sum, 3000000);
-      expect(c['totalPaidPaise'], sum);
-      expect(pays.every((m) => m['openingBalance'] == false), isTrue);
+        final r = await contracts.onboardContract(cmd);
+        // Attempt 4: the resumer writes the sync list after batch 1.
+        await contracts.resumeOnboarding(
+          ResumeOnboardingCommand(
+            cid: kCid,
+            contractId: r.id,
+            actor: kActor,
+            role: Role.owner,
+          ),
+        );
+        final c = await rawContract(db, r.id);
+        final pays = (await rawDocs(
+          db,
+          'transactions',
+          r.id,
+        )).where((m) => m['type'] == 'payment').toList();
+        expect(pays, hasLength(300));
+        final sum = pays.fold<int>(0, (s, m) => s + (m['amountPaise'] as int));
+        expect(sum, 3000000);
+        expect(c['totalPaidPaise'], sum);
+        expect(pays.every((m) => m['openingBalance'] == false), isTrue);
 
-      final preview = projectContract(
-        contract: plan.contract,
-        installments: plan.installments,
-        transactions: plan.transactions,
-        today: _today,
-      );
-      final saved = await projectSaved(r.id);
-      expect(saved.totalPaid, preview.totalPaid);
-      expect(saved.outstanding, preview.outstanding);
-      expect(saved.overdueAmount, preview.overdueAmount);
-      expect(saved.overdueCount, preview.overdueCount);
-      expect(saved.maxDaysOverdue, preview.maxDaysOverdue);
-      expect(saved.maturityDate, preview.maturityDate);
-      expect(saved.cyclesPaid, preview.cyclesPaid);
-      expect(saved.cyclesTotal, preview.cyclesTotal);
-      expect(
-        saved.rows.map(
-          (ProjectedRow x) =>
-              (x.seq, x.dueDate, x.due, x.paid, x.status, x.daysOverdue),
-        ),
-        preview.rows.map(
-          (ProjectedRow x) =>
-              (x.seq, x.dueDate, x.due, x.paid, x.status, x.daysOverdue),
-        ),
-      );
-    });
+        final preview = projectContract(
+          contract: plan.contract,
+          installments: plan.installments,
+          transactions: plan.transactions,
+          today: _today,
+        );
+        final saved = await projectSaved(r.id);
+        expect(saved.totalPaid, preview.totalPaid);
+        expect(saved.outstanding, preview.outstanding);
+        expect(saved.overdueAmount, preview.overdueAmount);
+        expect(saved.overdueCount, preview.overdueCount);
+        expect(saved.maxDaysOverdue, preview.maxDaysOverdue);
+        expect(saved.maturityDate, preview.maturityDate);
+        expect(saved.cyclesPaid, preview.cyclesPaid);
+        expect(saved.cyclesTotal, preview.cyclesTotal);
+        expect(
+          saved.rows.map(
+            (ProjectedRow x) =>
+                (x.seq, x.dueDate, x.due, x.paid, x.status, x.daysOverdue),
+          ),
+          preview.rows.map(
+            (ProjectedRow x) =>
+                (x.seq, x.dueDate, x.due, x.paid, x.status, x.daysOverdue),
+          ),
+        );
+      },
+    );
 
-    test('1,100 payments → 4 batches, each balanced, Σ == totalPaid', () async {
-      final cmd = daily(itemisedDaily(1100, 10));
-      final plan = planOnboarding(
-        terms: cmd,
-        pastPayments: cmd.pastPayments,
-        today: _today,
-        contractId: 'x',
-        borrowerId: 'b1',
-        borrowerName: 'Anita Sharma',
-        borrowerPhoneE164: '+919845012890',
-        now: DateTime.utc(2026, 11, 24),
-        uuid: const Uuid(),
-      );
-      final chunks = plan.chunks(db, kCid);
-      expect(chunks.opsPerBatch, <int>[450, 450, 450, 122]);
-      expect(chunks.chunkSums, <Money>[rs(810), rs(4490), rs(4490), rs(1210)]);
-      final r = await contracts.onboardContract(cmd);
-      expect((await rawContract(db, r.id))['totalPaidPaise'], 1100000);
-    });
+    test(
+      '1,100 payments → 12 batches (≤ 100 payments each), each balanced, Σ == totalPaid',
+      () async {
+        final cmd = daily(itemisedDaily(1100, 10));
+        final plan = planOnboarding(
+          terms: cmd,
+          pastPayments: cmd.pastPayments,
+          today: _today,
+          contractId: 'x',
+          borrowerId: 'b1',
+          borrowerName: 'Anita Sharma',
+          borrowerPhoneE164: '+919845012890',
+          now: DateTime.utc(2026, 11, 24),
+          uuid: const Uuid(),
+        );
+        final chunks = plan.layout();
+        expect(chunks.opsPerBatch, <int>[
+          450,
+          for (var i = 0; i < 10; i++) 101,
+          21,
+        ]);
+        expect(chunks.chunkSums, <Money>[
+          rs(800),
+          for (var i = 0; i < 10; i++) rs(1000),
+          rs(200),
+        ]);
+        final r = await contracts.onboardContract(cmd);
+        // Attempt 4: the resumer writes the sync list after batch 1.
+        await contracts.resumeOnboarding(
+          ResumeOnboardingCommand(
+            cid: kCid,
+            contractId: r.id,
+            actor: kActor,
+            role: Role.owner,
+          ),
+        );
+        expect((await rawContract(db, r.id))['totalPaidPaise'], 1100000);
+      },
+    );
   });
 
   group('R3 refusals write nothing', () {
@@ -786,7 +826,9 @@ void main() {
       final raw = ModelCodecs.contract.toFirestore(legacy, null)
         ..remove('origin')
         ..remove('onboardedOn')
-        ..remove('previousRef');
+        ..remove('previousRef')
+        ..remove('onboardedPaymentCount')
+        ..remove('onboardedTotalPaise');
       await db.doc('companies/$kCid/contracts/old').set(raw);
       for (final i in scheduleFor(legacy)) {
         await TypedRefs(db).installment(kCid, i.id).set(i);

@@ -1,8 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../../core/firebase/converters.dart';
+import '../../../core/firebase/firestore_paths.dart';
 import '../../../core/time/civil_date.dart';
 import '../../../domain/models/models.dart';
+import 'onboarding_queue.dart';
 
 /// Read side of the ledger, shared by Borrowers, Contracts, Dashboard,
 /// Calendar and Overdue (Section 2, "Offline-first data flow").
@@ -18,7 +20,10 @@ import '../../../domain/models/models.dart';
 /// `lib/domain/ledger/`.
 class LedgerSnapshotRepository {
   LedgerSnapshotRepository({required FirebaseFirestore firestore})
-    : _refs = TypedRefs(firestore);
+    : _db = firestore,
+      _refs = TypedRefs(firestore);
+
+  final FirebaseFirestore _db;
 
   final TypedRefs _refs;
 
@@ -141,4 +146,45 @@ class LedgerSnapshotRepository {
       .where('contractId', isEqualTo: contractId)
       .snapshots()
       .map(_docs);
+
+  /// One contract's onboarding sync list, or null when it has none.
+  Stream<OnboardingQueue?> watchOnboardingQueue(
+    String cid,
+    String contractId,
+  ) => _db.doc(FirestorePaths.onboardingQueue(cid, contractId)).snapshots().map(
+    (DocumentSnapshot<Map<String, dynamic>> s) {
+      final data = s.data();
+      return data == null ? null : OnboardingQueue.fromFirestore(data);
+    },
+  );
+
+  /// The company's pending sync lists with the snapshot's
+  /// `hasPendingWrites`. Emits on metadata changes too; the resumer
+  /// filters with `resumeTriggerChanged`, so it fires only when the id set
+  /// changes or local writes reach the server (true → false).
+  Stream<PendingQueues> watchPendingOnboardingQueues(String cid) => _db
+      .collection(FirestorePaths.onboardingQueues(cid))
+      .where('status', isEqualTo: OnboardingQueueStatus.pending.name)
+      .snapshots(includeMetadataChanges: true)
+      .map(
+        (QuerySnapshot<Map<String, dynamic>> s) => PendingQueues(<String>{
+          for (final d in s.docs) d.id,
+        }, hasPendingWrites: s.metadata.hasPendingWrites),
+      );
+
+  /// Whether this device's view of one contract's transactions is
+  /// server-confirmed: the snapshot came from the server with no local
+  /// pending writes overlaid (same rule as `watchMemberDoc`). The
+  /// onboarding repair is offered only then.
+  Stream<bool> watchContractTransactionsConfirmed(
+    String cid,
+    String contractId,
+  ) => _refs
+      .transactions(cid)
+      .where('contractId', isEqualTo: contractId)
+      .snapshots(includeMetadataChanges: true)
+      .map(
+        (QuerySnapshot<LedgerTransaction> s) =>
+            !s.metadata.isFromCache && !s.metadata.hasPendingWrites,
+      );
 }

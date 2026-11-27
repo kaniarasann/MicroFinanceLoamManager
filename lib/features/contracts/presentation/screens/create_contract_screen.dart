@@ -19,6 +19,7 @@ import '../../application/contract_providers.dart';
 import '../../data/contract_repository.dart';
 import '../widgets/borrower_card.dart';
 import '../widgets/loan_amount_fields.dart';
+import '../widgets/loan_kind_toggle.dart';
 import '../widgets/loan_schedule_fields.dart';
 import '../widgets/loan_summary_card.dart';
 import '../widgets/loan_terms_controller.dart';
@@ -163,6 +164,13 @@ class _CreateContractScreenState extends ConsumerState<CreateContractScreen> {
                 AppSpacing.xl,
               ),
               children: <Widget>[
+                LoanKindToggle(
+                  selected: LoanKind.newLoan,
+                  onChanged: (LoanKind _) => context.pushReplacement(
+                    AppRoutes.onboardContract(borrowerId: _borrowerId),
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.md),
                 BorrowerCard(
                   borrower: borrower,
                   loading: id != null && borrower == null,

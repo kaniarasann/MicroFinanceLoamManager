@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nordic_ledger/core/errors/app_failure.dart';
+import 'package:nordic_ledger/core/firebase/balanced_chunks.dart'
+    show maxLedgerItemsPerBatch;
 import 'package:nordic_ledger/core/firebase/converters.dart';
 import 'package:nordic_ledger/core/money/money.dart';
 import 'package:nordic_ledger/core/time/civil_date.dart';
@@ -94,6 +96,21 @@ void main() {
       <String, dynamic>{...doc.data(), 'id': doc.id},
   ];
 
+  /// Batch 1 (onboardContract), then the resumer writes the sync list, as
+  /// the app does once batch 1 is on the server (attempt 4).
+  Future<LedgerWriteResult> onboardAll(OnboardContractCommand cmd) async {
+    final r = await repo.onboardContract(cmd);
+    await repo.resumeOnboarding(
+      ResumeOnboardingCommand(
+        cid: kCid,
+        contractId: r.id,
+        actor: kActor,
+        role: Role.owner,
+      ),
+    );
+    return r;
+  }
+
   Future<Map<String, dynamic>> contractRaw(String id) async =>
       (await db.doc('companies/$kCid/contracts/$id').get()).data()!;
 
@@ -135,7 +152,7 @@ void main() {
           today: _today,
         ),
       );
-      final r = await repo.onboardContract(cmd);
+      final r = await onboardAll(cmd);
       expect(r.outcome, WriteOutcome.synced);
 
       final c = await contractRaw(r.id);
@@ -213,7 +230,7 @@ void main() {
     });
 
     test('₹0 collected: only the contract, rows and disbursement', () async {
-      final r = await repo.onboardContract(weekly(previousRef: null));
+      final r = await onboardAll(weekly(previousRef: null));
       final c = await contractRaw(r.id);
       expect(c['totalPaidPaise'], 0);
       expect(c['lastPaymentOn'], isNull);
@@ -226,7 +243,7 @@ void main() {
     });
 
     test('upfront ₹0 is allowed: net = sanctioned', () async {
-      final r = await repo.onboardContract(weekly(upfrontInput: 0));
+      final r = await onboardAll(weekly(upfrontInput: 0));
       final c = await contractRaw(r.id);
       expect(c['upfrontPaise'], 0);
       expect(c['netDisbursedPaise'], 10000000);
@@ -234,7 +251,7 @@ void main() {
   });
 
   group('onboardContract: itemised payments and balanced chunks', () {
-    test('daily loan, 300 itemised payments → 2 balanced batches', () async {
+    test('daily loan, 300 itemised payments → 4 balanced batches', () async {
       final cmd = daily(itemised(300, 100));
       final plan = planOnboarding(
         terms: cmd,
@@ -247,15 +264,41 @@ void main() {
         now: DateTime.utc(2026, 11, 24),
         uuid: const Uuid(),
       );
-      final chunks = plan.chunks(db, kCid);
-      expect(chunks.fixedOps, 366 + 1 + 1); // installments, disb, company
-      expect(chunks.chunkSizes, <int>[81, 219]);
-      expect(chunks.batchCount, 2);
-      expect(chunks.opsPerBatch, <int>[450, 220]);
+      final chunks = plan.layout();
+      // Attempt 4: batch 1 = contract + disbursement + nextLoanNo + the
+      // queue doc + 366 installments + 80 payments; the resumer then
+      // writes 100 + 100 + 20, one batch at a time.
+      expect(chunks.hasQueue, isTrue);
+      expect(chunks.chunkSizes, <int>[80, 100, 100, 20]);
+      expect(chunks.batchCount, 4);
+      expect(chunks.opsPerBatch, <int>[450, 101, 101, 21]);
       expect(Money.sum(chunks.chunkSums), rs(30000));
 
-      final r = await repo.onboardContract(cmd);
+      // Batch 1 alone: 80 payments, the queue lists the other 220.
+      final first = await repo.onboardContract(cmd);
+      expect((await contractRaw(first.id))['totalPaidPaise'], 800000);
+      final q =
+          (await db.doc('companies/$kCid/onboardingQueues/${first.id}').get())
+              .data()!;
+      expect(q['status'], 'pending');
+      expect(q['count'], 220);
+      expect((q['entries'] as List<Object?>), hasLength(220));
+      final out = await repo.resumeOnboarding(
+        ResumeOnboardingCommand(
+          cid: kCid,
+          contractId: first.id,
+          actor: kActor,
+          role: Role.owner,
+        ),
+      );
+      expect(out, ResumeOutcome.complete);
+      final r = first;
       final c = await contractRaw(r.id);
+      expect(
+        (await db.doc('companies/$kCid/onboardingQueues/${r.id}').get())
+            .data()!['status'],
+        'complete',
+      );
       expect(c['totalPaidPaise'], 3000000);
       expect(await all('installments'), hasLength(366));
       final pays = (await all(
@@ -280,8 +323,8 @@ void main() {
     for (final (n, rupees, batches) in <(int, int, int)>[
       (81, 100, 1),
       (82, 100, 2),
-      (600, 50, 3),
-      (1100, 10, 4),
+      (600, 50, 7),
+      (1100, 10, 12),
     ]) {
       test('$n payments → $batches batch(es): Σ payments == Σ increments '
           '== totalPaid', () async {
@@ -297,10 +340,14 @@ void main() {
           now: DateTime.utc(2026, 11, 24),
           uuid: const Uuid(),
         );
-        final chunks = plan.chunks(db, kCid);
+        final chunks = plan.layout();
         expect(chunks.batchCount, batches);
         expect(chunks.opsPerBatch.every((int o) => o <= 450), isTrue);
-        for (var i = 0; i < batches; i++) {
+        expect(
+          chunks.chunkSizes.every((int n) => n <= maxLedgerItemsPerBatch),
+          isTrue,
+        );
+        for (var i = 0; i < chunks.chunkSizes.length; i++) {
           expect(
             chunks.chunkSums[i],
             rs(rupees) * chunks.chunkSizes[i],
@@ -309,7 +356,7 @@ void main() {
         }
         expect(Money.sum(chunks.chunkSums), plan.totalCollected);
 
-        final r = await repo.onboardContract(cmd);
+        final r = await onboardAll(cmd);
         final c = await contractRaw(r.id);
         final pays = (await all(
           'transactions',
@@ -349,7 +396,7 @@ void main() {
         transactions: plan.transactions,
         today: _today,
       );
-      final r = await repo.onboardContract(cmd);
+      final r = await onboardAll(cmd);
       final saved = await projectSaved(r.id);
       expect(saved.totalPaid, preview.totalPaid);
       expect(saved.outstanding, preview.outstanding);
@@ -363,13 +410,130 @@ void main() {
     });
   });
 
+  group('Sprint 7c: installments spill (M1) and onboarding totals (M2)', () {
+    test('small maxItems (10): batch 1 holds the whole schedule; the '
+        'resumer writes 29 balanced batches of 10, one at a time', () async {
+      final cmd = daily(itemised(300, 100));
+      final plan = planOnboarding(
+        terms: cmd,
+        pastPayments: cmd.pastPayments,
+        today: _today,
+        contractId: 'c-x',
+        borrowerId: 'b1',
+        borrowerName: 'Anita Sharma',
+        borrowerPhoneE164: '+919845012890',
+        now: DateTime.utc(2026, 11, 24),
+        uuid: const Uuid(),
+      );
+      final layout = plan.layout(maxItems: 10);
+      expect(layout.chunkSizes, <int>[10, for (var i = 0; i < 29; i++) 10]);
+      expect(layout.opsPerBatch.first, 3 + 1 + 366 + 10);
+      for (var i = 0; i < layout.chunkSizes.length; i++) {
+        expect(layout.chunkSums[i], rs(100) * layout.chunkSizes[i]);
+      }
+      // A limit too small for the schedule is refused, never split.
+      expect(() => plan.layout(limit: 100), throwsStateError);
+
+      final small = ContractRepository(
+        firestore: db,
+        clock: clockAt(_today),
+        batchMaxItems: 10,
+      );
+      final r = await small.onboardContract(cmd);
+      expect((await contractRaw(r.id))['totalPaidPaise'], 100000);
+      expect(await all('installments'), hasLength(366));
+      expect(
+        await small.resumeOnboarding(
+          ResumeOnboardingCommand(
+            cid: kCid,
+            contractId: r.id,
+            actor: kActor,
+            role: Role.owner,
+          ),
+        ),
+        ResumeOutcome.complete,
+      );
+      final c = await contractRaw(r.id);
+      expect(c['totalPaidPaise'], 3000000);
+      expect(c['onboardedPaymentCount'], 300);
+      expect(c['onboardedTotalPaise'], 3000000);
+      final p = await projectSaved(r.id);
+      expect(p.totalPaid, rs(30000));
+      expect(p.rows.where((ProjectedRow x) => !x.isExtension), hasLength(366));
+    });
+
+    test(
+      'batchLimit 100 with few payments: one batch when it all fits',
+      () async {
+        final cmd = weekly();
+        final plan = planOnboarding(
+          terms: cmd,
+          pastPayments: cmd.pastPayments,
+          today: _today,
+          contractId: 'c-y',
+          borrowerId: 'b1',
+          borrowerName: 'Anita Sharma',
+          borrowerPhoneE164: '+919845012890',
+          now: DateTime.utc(2026, 11, 24),
+          uuid: const Uuid(),
+        );
+        final chunks = plan.layout(limit: 100);
+        // contract, disb, company, 10 installments; no payments, no queue.
+        expect(chunks.opsPerBatch, <int>[13]);
+        expect(chunks.hasQueue, isFalse);
+      },
+    );
+
+    test('the onboarded contract stores onboardedPaymentCount and '
+        'onboardedTotalPaise in batch 1', () async {
+      final r = await onboardAll(daily(itemised(600, 50)));
+      final c = await contractRaw(r.id);
+      expect(c['onboardedPaymentCount'], 600);
+      expect(c['onboardedTotalPaise'], 3000000);
+      expect(c['totalPaidPaise'], 3000000);
+      final saved = (await TypedRefs(db).contract(kCid, r.id).get()).data()!;
+      expect(saved.onboardedPaymentCount, 600);
+      expect(saved.onboardedTotal, rs(30000));
+    });
+
+    test(
+      '₹0 onboarding stores 0 / ₹0; a standard contract stores null',
+      () async {
+        final r = await onboardAll(weekly());
+        final c = await contractRaw(r.id);
+        expect(c['onboardedPaymentCount'], 0);
+        expect(c['onboardedTotalPaise'], 0);
+
+        final std = await repo.createContract(
+          CreateContractCommand(
+            cid: kCid,
+            borrower: anita(),
+            sanctioned: rs(10000),
+            upfrontMode: UpfrontMode.flat,
+            upfrontInput: 0,
+            installmentAmount: rs(1000),
+            frequency: Frequency.daily,
+            firstDueDate: _today.addDays(1),
+            disbursedOn: _today,
+            cachedNextLoanNo: 4,
+            actor: kActor,
+          ),
+        );
+        final s = await contractRaw(std.id);
+        expect(s.containsKey('onboardedPaymentCount'), isTrue);
+        expect(s['onboardedPaymentCount'], isNull);
+        expect(s['onboardedTotalPaise'], isNull);
+      },
+    );
+  });
+
   group('onboardContract: refusals write nothing', () {
     Future<void> expectValidation(
       OnboardContractCommand cmd,
       String field,
     ) async {
       await expectLater(
-        repo.onboardContract(cmd),
+        onboardAll(cmd),
         throwsA(
           isA<ValidationFailure>().having(
             (ValidationFailure f) => f.field,
@@ -482,7 +646,7 @@ void main() {
     test('a collector (or no role) is refused', () async {
       for (final role in <Role?>[Role.collector, null]) {
         await expectLater(
-          repo.onboardContract(weekly(role: role)),
+          onboardAll(weekly(role: role)),
           throwsA(isA<PermissionDeniedFailure>()),
         );
       }

@@ -79,16 +79,34 @@ class LoanTermsController extends ChangeNotifier {
 
   void firstDuePicked(CivilDate d) => _set(() => _firstDuePicked = d);
 
+  CivilDate? _disbursedOn;
+
+  /// The picked "Disbursed on" (onboarding only); null = today.
+  CivilDate? get disbursedOn => _disbursedOn;
+
+  /// Onboarding an existing loan: the original disbursement date. The
+  /// default first collection date and collection day then follow it. A
+  /// picked first date is kept only while it is still within
+  /// [d, d + 366].
+  void disbursedOnChanged(CivilDate d) => _set(() {
+    _disbursedOn = d;
+    final first = _firstDuePicked;
+    if (first != null && (first.isBefore(d) || first.isAfter(d.addDays(366)))) {
+      _firstDuePicked = null;
+    }
+  });
+
   void _set(VoidCallback change) {
     change();
     notifyListeners();
   }
 
-  /// The live draft, disbursed on [today]; weekday / month day default to
-  /// today's.
+  /// The live draft, disbursed on [today] (or the picked [disbursedOn]);
+  /// weekday / month day default to that day's.
   ContractDraft draft(CivilDate today) {
-    final weekday = _weekday ?? today.weekday;
-    final monthDay = _monthDay ?? today.day;
+    final base = _disbursedOn ?? today;
+    final weekday = _weekday ?? base.weekday;
+    final monthDay = _monthDay ?? base.day;
     return ContractDraft(
       sanctioned: _sanctionedValue,
       upfrontMode: _mode,
@@ -100,12 +118,12 @@ class LoanTermsController extends ChangeNotifier {
       firstDueDate:
           _firstDuePicked ??
           defaultFirstDue(
-            today,
+            base,
             _frequency,
             weekday: weekday,
             monthDay: monthDay,
           ),
-      disbursedOn: today,
+      disbursedOn: base,
     );
   }
 

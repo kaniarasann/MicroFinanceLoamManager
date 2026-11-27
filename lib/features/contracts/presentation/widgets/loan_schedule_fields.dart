@@ -21,6 +21,10 @@ class LoanScheduleFields extends StatelessWidget {
     required this.draft,
     required this.today,
     required this.showAllErrors,
+    this.firstDueMin,
+    this.firstDueMax,
+    this.showSchedulePreview = true,
+    this.firstDueErrorText,
     super.key,
   });
 
@@ -28,6 +32,19 @@ class LoanScheduleFields extends StatelessWidget {
   final ContractDraft draft;
   final CivilDate today;
   final bool showAllErrors;
+
+  /// Limits of the "First collection date" picker; default today …
+  /// today + 366 (new loan, rollover). Onboarding passes disbursedOn …
+  /// disbursedOn + 366.
+  final CivilDate? firstDueMin;
+  final CivilDate? firstDueMax;
+
+  /// The planned-schedule preview card (onboarding shows its own "As of
+  /// today" preview instead).
+  final bool showSchedulePreview;
+
+  /// Overrides the first-date error (onboarding validates more windows).
+  final String? firstDueErrorText;
 
   String? _show(String field, {required bool touched}) =>
       showAllErrors || touched ? draft.errorFor(field) : null;
@@ -92,9 +109,11 @@ class LoanScheduleFields extends StatelessWidget {
           fieldKey: const ValueKey<String>('first_due_field'),
           label: 'First collection date',
           value: schedule?.first.dueDate ?? draft.firstDueDate,
-          first: today,
-          last: today.addDays(366),
-          errorText: _show(LedgerFields.firstDueDate, touched: true),
+          first: firstDueMin ?? today,
+          last: firstDueMax ?? today.addDays(366),
+          errorText:
+              firstDueErrorText ??
+              _show(LedgerFields.firstDueDate, touched: true),
           onChanged: terms.firstDuePicked,
         ),
         const SizedBox(height: AppSpacing.sm),
@@ -107,7 +126,7 @@ class LoanScheduleFields extends StatelessWidget {
             color: AppColors.textSecondary,
           ),
         ),
-        if (schedule != null) ...<Widget>[
+        if (schedule != null && showSchedulePreview) ...<Widget>[
           const SizedBox(height: AppSpacing.md),
           SchedulePreview(schedule: schedule),
         ],

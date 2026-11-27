@@ -109,15 +109,13 @@ AsyncValue<PortfolioMetrics> portfolio(Ref ref) {
   }
 
   final active = projections.requireValue;
-  // A contract or transaction caught between the two listeners during a
-  // close / reopen appears once: the active side wins.
-  final txById = <String, LedgerTransaction>{
-    for (final t in historyTx.requireValue) t.id: t,
-    for (final t in activeTx.requireValue) t.id: t,
-  };
   final metrics = computePortfolio(
     projections: active.values.toList(growable: false),
-    allTransactions: txById.values.toList(growable: false),
+    allTransactions: dashboardTransactions(
+      active: activeTx.requireValue,
+      history: historyTx.requireValue,
+      historyContractIds: <String>{for (final c in history.requireValue) c.id},
+    ),
     today: today,
     contractsById: <String, Contract>{
       for (final p in active.values) p.contract.id: p.contract,
@@ -132,6 +130,23 @@ AsyncValue<PortfolioMetrics> portfolio(Ref ref) {
   holder.last = metrics;
   return AsyncData<PortfolioMetrics>(metrics);
 }
+
+/// The transactions the dashboard folds: every active one, plus inactive
+/// ones only of closed / rolled-over contracts ([historyContractIds]). A
+/// cancelled contract's transactions (inactive, contract not in history)
+/// are dropped, so a cancelled onboarded loan leaves collected, today,
+/// this month, the chart and the calendar entirely. A transaction caught
+/// between the two listeners during a close / reopen appears once: the
+/// active side wins.
+List<LedgerTransaction> dashboardTransactions({
+  required Iterable<LedgerTransaction> active,
+  required Iterable<LedgerTransaction> history,
+  required Set<String> historyContractIds,
+}) => <String, LedgerTransaction>{
+  for (final t in history)
+    if (historyContractIds.contains(t.contractId)) t.id: t,
+  for (final t in active) t.id: t,
+}.values.toList(growable: false);
 
 /// Memoised collections chart series for [period].
 @riverpod

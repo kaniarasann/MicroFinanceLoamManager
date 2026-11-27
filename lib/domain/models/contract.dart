@@ -40,6 +40,17 @@ abstract class Contract with _$Contract {
     /// The paper / old-system loan number (at most 40 characters).
     String? previousRef,
 
+    /// How many past payments the onboarding wrote (set only when
+    /// onboarded; immutable). Lets the detail screen spot a partly synced
+    /// onboarding ("Onboarding incomplete: X of Y payments synced").
+    int? onboardedPaymentCount,
+
+    /// Σ of the past payments the onboarding wrote (set only when
+    /// onboarded; immutable).
+    @NullableMoneyPaiseConverter()
+    @JsonKey(name: 'onboardedTotalPaise')
+    Money? onboardedTotal,
+
     // Amounts.
     /// Repayable principal.
     @MoneyPaiseConverter()

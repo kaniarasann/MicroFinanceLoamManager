@@ -201,6 +201,55 @@ class PaymentActions {
         );
   }
 
+  /// Owner only: add one payment missing from a partly synced onboarding.
+  Future<PaymentWriteResult> addOnboardingPayment({
+    required ContractView view,
+    required Money amount,
+    required CivilDate paidOn,
+    required PaymentMode mode,
+    String? reference,
+    bool openingBalance = false,
+  }) async {
+    final actor = await readLedgerActor(_ref);
+    return _ref
+        .read(paymentRepositoryProvider)
+        .addOnboardingPayment(
+          AddOnboardingPaymentCommand(
+            cid: requireActiveCid(_ref),
+            snapshot: view.snapshot,
+            amount: amount,
+            paidOn: paidOn,
+            mode: mode,
+            reference: reference,
+            openingBalance: openingBalance,
+            actor: actor,
+            role: _ref.read(currentRoleProvider),
+          ),
+        );
+  }
+
+  /// Owner only: cancel a wrongly onboarded loan (reverse every onboarding
+  /// payment on its date, then status cancelled).
+  Future<PaymentWriteResult> cancelOnboarded({
+    required ContractView view,
+    required String reason,
+    bool queuePending = false,
+  }) async {
+    final actor = await readLedgerActor(_ref);
+    return _ref
+        .read(paymentRepositoryProvider)
+        .cancelOnboardedLoan(
+          CancelOnboardedCommand(
+            cid: requireActiveCid(_ref),
+            snapshot: view.snapshot,
+            reason: reason,
+            queuePending: queuePending,
+            actor: actor,
+            role: _ref.read(currentRoleProvider),
+          ),
+        );
+  }
+
   /// Owner only: reverse every unreversed opening-balance payment of an
   /// onboarded contract (each dated on its original date).
   Future<PaymentWriteResult> reverseOpeningBalance({

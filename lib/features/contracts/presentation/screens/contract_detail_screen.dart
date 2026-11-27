@@ -14,10 +14,16 @@ import '../../../../core/widgets/status_pill.dart';
 import '../../../../domain/ledger/ledger.dart';
 import '../../../../domain/models/models.dart';
 import '../../../company/application/company_providers.dart';
+import '../../../payments/application/payment_providers.dart';
+import '../../../payments/data/payment_repository.dart';
+import '../../../payments/presentation/widgets/add_onboarding_payment_sheet.dart';
+import '../../../payments/presentation/widgets/cancel_onboarded_dialog.dart';
 import '../../../payments/presentation/widgets/payment_ledger_list.dart';
+import '../../../payments/presentation/widgets/reverse_opening_dialog.dart';
 import '../../../payments/presentation/widgets/reverse_payment_dialog.dart';
 import '../../../rollover/presentation/widgets/rollover_link_banner.dart';
 import '../../application/contract_providers.dart';
+import '../../application/onboarding_resumer.dart';
 import '../widgets/contract_header_card.dart';
 import '../widgets/installment_row_card.dart';
 import '../widgets/ledger_banner.dart';
@@ -65,8 +71,67 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
         icon: Icons.search_off,
       );
     }
+    final isOwner = ref.watch(currentRoleProvider) == Role.owner;
+    final canReverseOpening =
+        view != null &&
+        isOwner &&
+        canReverseIn(view.contract.status) &&
+        unreversedOpeningBalance(view.snapshot).isNotEmpty;
+    // F2: a cancelled loan whose onboarding payments are not all reversed
+    // yet offers "Finish cancelling".
+    final finishingCancel = view != null && isCancelUnfinished(view.snapshot);
+    final canCancel =
+        view != null &&
+        isOwner &&
+        view.contract.isOnboarded &&
+        (view.contract.status == ContractStatus.active ||
+            view.contract.status == ContractStatus.closed ||
+            finishingCancel);
+    final queuePending =
+        ref
+            .watch(onboardingQueueProvider(widget.contractId))
+            .value
+            ?.isPending ??
+        false;
     return Scaffold(
-      appBar: AppBar(title: Text(view == null ? 'Loan' : 'Loan schedule')),
+      appBar: AppBar(
+        title: Text(view == null ? 'Loan' : 'Loan schedule'),
+        actions: <Widget>[
+          if (canReverseOpening || canCancel)
+            PopupMenuButton<String>(
+              key: const ValueKey<String>('contract_menu'),
+              tooltip: 'Loan options',
+              icon: const Icon(Icons.more_vert),
+              onSelected: (String v) => unawaited(
+                v == 'cancel_onboarded'
+                    ? showCancelOnboardedDialog(
+                        context,
+                        view: view,
+                        queuePending: queuePending,
+                      )
+                    : showReverseOpeningDialog(context, view: view),
+              ),
+              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                if (canReverseOpening)
+                  const PopupMenuItem<String>(
+                    key: ValueKey<String>('reverse_opening_balance'),
+                    value: 'reverse_opening',
+                    child: Text('Reverse opening balance'),
+                  ),
+                if (canCancel)
+                  PopupMenuItem<String>(
+                    key: const ValueKey<String>('cancel_onboarded_loan'),
+                    value: 'cancel_onboarded',
+                    child: Text(
+                      finishingCancel
+                          ? 'Finish cancelling'
+                          : 'Cancel onboarded loan',
+                    ),
+                  ),
+              ],
+            ),
+        ],
+      ),
       body: SafeArea(top: false, child: body),
       bottomNavigationBar: view == null ? null : _footer(view),
     );
@@ -75,23 +140,40 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
   Widget _body(ContractView view) {
     final window = WindowSize.of(context);
     final margin = window.margin;
+    final isOwner = ref.watch(currentRoleProvider) == Role.owner;
+    // A cancelled loan collects nothing: no overdue / excess banners, no
+    // auto-extension note or rows (attempt 6).
+    final cancelled = view.contract.status == ContractStatus.cancelled;
     final summary = <Widget>[
       ContractHeaderCard(projection: view.projection),
       ..._links(view.contract),
-      ..._banners(view.projection),
-      const SizedBox(height: AppSpacing.md),
-      const LedgerBanner(
-        key: ValueKey<String>('extension_note'),
-        text:
-            'Missed or partial amounts are added to the end automatically. '
-            'Late payments remove them.',
-        kind: StatusKind.info,
-        icon: Icons.info_outline,
-      ),
+      ..._onboardingSync(view, isOwner: isOwner),
+      if (!cancelled) ..._banners(view.projection),
+      if (cancelled) ...<Widget>[
+        const SizedBox(height: AppSpacing.md),
+        const LedgerBanner(
+          key: ValueKey<String>('cancelled_note'),
+          text:
+              'This loan is cancelled. Nothing is due or collected on it, '
+              'and it is left out of the dashboard.',
+          kind: StatusKind.neutral,
+          icon: Icons.block,
+        ),
+      ] else ...<Widget>[
+        const SizedBox(height: AppSpacing.md),
+        const LedgerBanner(
+          key: ValueKey<String>('extension_note'),
+          text:
+              'Missed or partial amounts are added to the end automatically. '
+              'Late payments remove them.',
+          kind: StatusKind.info,
+          icon: Icons.info_outline,
+        ),
+      ],
     ];
     final rows = <ProjectedRow>[
       for (final r in view.projection.rows)
-        if (_filter.matches(r)) r,
+        if (_filter.matches(r) && !(cancelled && r.isExtension)) r,
     ];
     final cycles = view.projection.rows.where(
       (ProjectedRow r) => r.countsAsCycle,
@@ -111,10 +193,10 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
       ),
     );
     final chips = _chips();
-    final isOwner = ref.watch(currentRoleProvider) == Role.owner;
     final ledger = PaymentLedgerList(
       transactions: view.transactions,
-      canReverse: isOwner,
+      // Not on rolled-over / cancelled loans (the repository refuses too).
+      canReverse: isOwner && canReverseIn(view.contract.status),
       onReverse: (LedgerTransaction tx) =>
           unawaited(showReversePaymentDialog(context, view: view, tx: tx)),
     );
@@ -204,6 +286,124 @@ class _ContractDetailScreenState extends ConsumerState<ContractDetailScreen> {
       if (from != null) ...<Widget>[
         const SizedBox(height: AppSpacing.md),
         RolloverLinkBanner(linkedContractId: from, forward: false),
+      ],
+    ];
+  }
+
+  /// "Onboarding incomplete: X of Y payments synced" when fewer onboarding
+  /// payments are on this device than the onboarding wrote, with the
+  /// owner's "Add missing onboarding payment" action.
+  List<Widget> _onboardingSync(ContractView view, {required bool isOwner}) {
+    final sync = OnboardingSync.of(view.snapshot);
+    if (view.contract.status == ContractStatus.cancelled) {
+      if (!isCancelUnfinished(view.snapshot)) return const <Widget>[];
+      final left = unreversedOnboardingPayments(view.snapshot).length;
+      return <Widget>[
+        const SizedBox(height: AppSpacing.md),
+        LedgerBanner(
+          key: const ValueKey<String>('cancel_unfinished_banner'),
+          text:
+              'Cancel not finished: $left onboarding '
+              '${left == 1 ? 'payment is' : 'payments are'} not reversed yet.',
+          kind: StatusKind.overdue,
+          icon: Icons.report_outlined,
+        ),
+        if (isOwner) ...<Widget>[
+          const SizedBox(height: AppSpacing.sm),
+          OutlinedButton.icon(
+            key: const ValueKey<String>('finish_cancelling'),
+            onPressed: () => unawaited(
+              showCancelOnboardedDialog(
+                context,
+                view: view,
+                queuePending: false,
+              ),
+            ),
+            icon: const Icon(Icons.undo),
+            label: const Text('Finish cancelling'),
+          ),
+        ],
+      ];
+    }
+    if (sync == null) return const <Widget>[];
+    final queue = ref.watch(onboardingQueueProvider(view.contract.id)).value;
+    // F4: only an active loan is "finishing"; a pending list on a closed or
+    // rolled-over loan falls back to the incomplete banner (+ repair where
+    // valid).
+    if (queue != null &&
+        queue.isPending &&
+        sync.isIncomplete &&
+        view.contract.isActive) {
+      // The sync list is still being written (an owner device resumes it
+      // once batch 1 is on the server): not an error, no repair.
+      return <Widget>[
+        const SizedBox(height: AppSpacing.md),
+        LedgerBanner(
+          key: const ValueKey<String>('onboarding_finishing_banner'),
+          text:
+              'Finishing onboarding sync… ${sync.synced} of '
+              '${sync.expected} payments. This completes automatically on '
+              "an owner's phone when it is online.",
+          kind: StatusKind.info,
+          icon: Icons.cloud_sync_outlined,
+        ),
+      ];
+    }
+    if (sync.isOvershoot) {
+      final over = sync.overshoot;
+      final by = over.isPositive
+          ? formatInr(over)
+          : '${sync.synced - sync.expected} '
+                '${sync.synced - sync.expected == 1 ? 'payment' : 'payments'}';
+      return <Widget>[
+        const SizedBox(height: AppSpacing.md),
+        LedgerBanner(
+          key: const ValueKey<String>('onboarding_overshoot_banner'),
+          text:
+              'Onboarding payments exceed what was onboarded by $by. '
+              'Review and reverse the duplicate.',
+          kind: StatusKind.overdue,
+          icon: Icons.report_outlined,
+        ),
+      ];
+    }
+    if (!sync.isIncomplete) return const <Widget>[];
+    final missing = sync.missing;
+    final confirmed =
+        ref
+            .watch(contractTransactionsConfirmedProvider(view.contract.id))
+            .value ??
+        false;
+    final cap = sync.repairCap(view.snapshot.outstanding);
+    return <Widget>[
+      const SizedBox(height: AppSpacing.md),
+      LedgerBanner(
+        key: const ValueKey<String>('onboarding_incomplete_banner'),
+        text:
+            'Onboarding incomplete: ${sync.synced} of ${sync.expected} '
+            'payments synced'
+            '${missing.isPositive ? ' · ${formatInr(missing)} missing' : ''}. '
+            'Payments still queued on the phone that onboarded this loan '
+            'will appear when it syncs. Check that phone first.',
+        kind: StatusKind.upcoming,
+        icon: Icons.sync_problem_outlined,
+      ),
+      if (isOwner && view.contract.isActive && cap.isPositive) ...<Widget>[
+        const SizedBox(height: AppSpacing.sm),
+        OutlinedButton.icon(
+          key: const ValueKey<String>('add_missing_onboarding_payment'),
+          // Only on a server-confirmed snapshot: a cached view may simply
+          // not have the other phone's batches yet.
+          onPressed: confirmed
+              ? () => unawaited(
+                  showAddOnboardingPaymentSheet(context, view: view),
+                )
+              : null,
+          icon: Icon(confirmed ? Icons.add : Icons.cloud_sync_outlined),
+          label: Text(
+            confirmed ? 'Add missing onboarding payment' : 'Waiting for sync…',
+          ),
+        ),
       ],
     ];
   }

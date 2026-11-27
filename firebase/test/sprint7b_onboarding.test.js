@@ -3,7 +3,8 @@
 // "Onboard an existing loan": contract `origin: 'onboarded'`, `onboardedOn`,
 // `previousRef`; tx `origin: 'onboarding'`, `openingBalance`; chunk-balanced
 // batches (chunk 1 = contract + installments + disbursement + nextLoanNo +
-// first k payments, chunks 2..m = ≤ 449 payments + contract increment).
+// first k payments, chunks 2..m = ≤ 100 payments + contract increment;
+// 7c attempt 3: the production per-batch rule budget).
 // Dates are relative to IST today, so the suite does not age.
 // Run: `npm test` from firebase/.
 import { readFileSync } from 'node:fs';
@@ -69,11 +70,15 @@ const contract = (createdBy, over = {}) => ({
   lastPaymentOn: null, closedAt: null, rolledOverFromContractId: null,
   rolledOverToContractId: null, rolloverSettledPaise: null,
   origin: 'onboarded', onboardedOn: T, previousRef: 'OLD-0042',
+  // Sprint 7c (M2): immutable onboarding totals (generous, so that every
+  // chunk-1 total below stays valid).
+  onboardedPaymentCount: 1100, onboardedTotalPaise: SANCTIONED - 1,
   createdBy, createdAt: Timestamp.now(), updatedAt: Timestamp.now(), schemaVersion: 1,
   ...over,
 });
 const standard = (createdBy, over = {}) => contract(createdBy, {
   origin: 'standard', onboardedOn: null, previousRef: null, disbursedOn: T, firstDueDate: D(1),
+  onboardedPaymentCount: null, onboardedTotalPaise: null,
   ...over,
 });
 const installment = (contractId, seq, createdBy) => ({
@@ -120,7 +125,7 @@ const chunk1 = (uid, { k = 3, nInst = N_INST, contractOver = {}, payOver = {}, d
 };
 
 // Chunks 2..m: payments + contract increment (balanced).
-const chunkN = (uid, { contractId = ONB, n = 449, start = 1, payOver = {} } = {}) => {
+const chunkN = (uid, { contractId = ONB, n = 100, start = 1, payOver = {} } = {}) => {
   const f = as(uid);
   const b = writeBatch(f);
   for (let i = start; i < start + n; i++) {
@@ -203,7 +208,7 @@ describe('Sprint 7b: onboarding chunk 1 by role', () => {
 });
 
 describe('Sprint 7b: later chunks', () => {
-  it('owner, chunk 2 (449 payments + contract increment) on the chunk-1 contract: allowed', async () => {
+  it('owner, chunk 2 (100 payments, the 7c batch budget + contract increment) on the chunk-1 contract: allowed', async () => {
     await assertSucceeds(chunkN('ravi'));
   });
   it('owner, chunk 1 then chunk 2 in order: allowed', async () => {
@@ -299,6 +304,7 @@ describe('Sprint 7b: standard contracts keep totalPaid == 0', () => {
   it('owner, legacy contract with no origin fields: allowed', async () => {
     const legacy = standard('ravi');
     delete legacy.origin; delete legacy.onboardedOn; delete legacy.previousRef;
+    delete legacy.onboardedPaymentCount; delete legacy.onboardedTotalPaise;
     await assertSucceeds(createContract('ravi', legacy));
   });
   it('owner, standard contract with totalPaid > 0: denied', async () => {

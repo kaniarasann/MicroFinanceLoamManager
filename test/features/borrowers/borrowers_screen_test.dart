@@ -240,6 +240,7 @@ void main() {
     await pumpFrames(tester);
     expect(find.byKey(k('borrower_menu')), findsNothing);
     expect(find.byKey(k('borrower_new_loan')), findsNothing);
+    expect(find.byKey(k('borrower_existing_loan')), findsNothing);
     // Collectors still call, message and record payments.
     expect(find.byKey(k('borrower_call')), findsOneWidget);
     expect(find.byKey(k('record_c1')), findsOneWidget);
@@ -256,6 +257,7 @@ void main() {
     expect(find.byKey(k('contract_pay_c1')), findsOneWidget);
     await tester.pageBack();
     await tester.pumpAndSettle();
+    expect(find.byKey(k('borrower_existing_loan')), findsOneWidget);
     await tester.tap(find.byKey(k('borrower_new_loan')));
     await tester.pumpAndSettle();
     expect(find.byKey(k('contract_new_b1')), findsOneWidget);

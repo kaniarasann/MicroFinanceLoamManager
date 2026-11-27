@@ -302,7 +302,7 @@ final class PortfolioProvider
   }
 }
 
-String _$portfolioHash() => r'cacb447c94702cf9bbc41f4a767627079da344d0';
+String _$portfolioHash() => r'9eb96df3d40ccfc3fe527b458f4543fb453bf8db';
 
 /// Memoised collections chart series for [period].
 

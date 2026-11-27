@@ -20,6 +20,13 @@ abstract final class FirestorePaths {
   static String contract(String cid, String contractId) =>
       '${contracts(cid)}/$contractId';
 
+  /// Onboarding sync lists: one doc per onboarded contract (doc id =
+  /// contract id) holding the payments written after batch 1.
+  static String onboardingQueues(String cid) =>
+      '${company(cid)}/onboardingQueues';
+  static String onboardingQueue(String cid, String contractId) =>
+      '${onboardingQueues(cid)}/$contractId';
+
   static String installments(String cid) => '${company(cid)}/installments';
   static String installment(String cid, String installmentId) =>
       '${installments(cid)}/$installmentId';

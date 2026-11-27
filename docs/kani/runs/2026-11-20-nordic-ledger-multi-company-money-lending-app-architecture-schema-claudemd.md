@@ -1098,7 +1098,7 @@ function onboardingTx(d) {
 | 6 | 12 Payments, reversal & rollover · 12b Close-loan chip + early-closure waiver (added 2026-11-23) | `kani-orchestrator:role-ui-team` | 5 | passed | Full, partial and advance payments update the schedule. A partial or missed installment shows as overdue and auto-extends at the end. A contract closes at ₹0, including a one-tap "Close loan" and an owner-only early-closure waiver. An owner rolls over a contract with the correct net cash. Excess is flagged after a concurrent offline collection. |
 | 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | passed | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
 | 7b | 18 Onboarding domain (models, validators, opening-total spread) · 19 Onboarding rules + rules tests · 20 Onboarding write path (balanced chunks, reversal dating, opening-balance reversal) — added 2026-11-24 | `kani-orchestrator:role-ui-team`, `kani-orchestrator:role-database-admin` | 7 | passed | Verifiable through the automated suites alone (like Sprint 2). The domain tests show a backdated loan's validation windows and the opening-total spread, and a projection with correct paid, partial, overdue and extension rows. The emulator rules tests show an owner's onboarding batches (1 and 2 chunks, 450 ops) are allowed and collector, other-company and out-of-window writes are denied. The `fake_cloud_firestore` tests show Σ payments == Σ increments == totalPaid across 1–4 batches. |
-| 7c | 21 Onboard existing loan screen, entry points, preview, labels · 22 Regression on onboarded loans — added 2026-11-24 | `kani-orchestrator:role-ui-team` | 7b | pending | On a device, as owner, onboard a weekly loan disbursed 3 months ago with an opening total, and a daily loan with itemised past payments, both while offline. The "As of today" preview matches the saved contract. Unpaid past installments show overdue with days late and auto-extend. The past cash appears on its own dates in Total collected, the chart and the calendar, without changing Received today. A collector cannot see or open onboarding. Reversing an onboarding payment corrects its original date. |
+| 7c | 21 Onboard existing loan screen, entry points, preview, labels · 22 Regression on onboarded loans — added 2026-11-24 | `kani-orchestrator:role-ui-team` | 7b | passed | On a device, as owner, onboard a weekly loan disbursed 3 months ago with an opening total, and a daily loan with itemised past payments, both while offline. The "As of today" preview matches the saved contract. Unpaid past installments show overdue with days late and auto-extend. The past cash appears on its own dates in Total collected, the chart and the calendar, without changing Received today. A collector cannot see or open onboarding. Reversing an onboarding payment corrects its original date. |
 | 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7, 7c | pending | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
 | 9 | 17 Release & Play readiness | `kani-orchestrator:role-ui-team` | 8 | pending | A signed release `.aab` builds with the launcher icon and splash, Google sign-in works in the release build, and the Play publishing checklist is ready for internal-testing upload. |
 
@@ -2727,6 +2727,531 @@ Sprint Test Summary: 40 passed, 0 failed.
 
 **User decision (2026-11-26), L1 / O1:** the opening-total spread covers only installments due **before** today. Today's installment stays open for live collection, and any advance is dated on the last due date before today (or `disbursedOn`). Do it in Sprint 7c.
 
+---
+
+### Sprint 7c
+
+**Sprint Goal:** On a device, as owner, onboard a weekly loan with an opening total and a daily loan with itemised past payments, both offline. The "As of today" preview matches the saved contract, past cash lands on its own dates without touching Received today, collectors cannot onboard, and onboarding corrections are dated in place.
+
+**kani-orchestrator:role-ui-team — Tasks 21 + 22 and carried items L1, M1, M2, L2, O2:**
+
+Files created/modified:
+- **Carried items**
+  - `lib/domain/ledger/onboarding.dart`: L1. `spreadOpeningTotal` covers rows due **strictly before** today. The advance goes on the last due date before today, or on `disbursedOn` when none. Doc comments are updated for the M1 chunk planner.
+  - `lib/domain/ledger/validators.dart`: adds `LedgerFields.paidOn`.
+  - `lib/domain/models/contract.dart` (+ generated `contract.freezed.dart` / `.g.dart`): M2. Adds `int? onboardedPaymentCount` and `Money? onboardedTotal` (key `onboardedTotalPaise`). Both are null on standard contracts.
+  - `lib/features/contracts/data/onboarding_plan.dart`:
+    - M1: installments are now `spill` ops.
+    - M2: `planOnboarding` sets `onboardedPaymentCount` / `onboardedTotal`, so they are written in chunk 1 by the raw-map contract `set`.
+  - `lib/features/payments/data/payment_repository.dart`:
+    - L2: new `reversalLockedMessage` / `canReverseIn`. `reversePayment` and `reverseOpeningBalance` throw `ValidationFailure` on rolledOver and cancelled contracts.
+    - M2: new `onboardingPayments`, `OnboardingSync.of(snapshot)`, `AddOnboardingPaymentCommand` and `addOnboardingPayment`.
+  - `lib/features/payments/application/payment_providers.dart`: adds `PaymentActions.addOnboardingPayment`.
+  - `firebase/firestore.rules`: M2 rules (see REDEPLOY REQUIRED below).
+- **Task 21 UI**
+  - `lib/features/contracts/application/onboarding_draft.dart` (new): `PastPaymentsMode` and `OnboardingDraft`. It derives the schedule, the spread, `pastPayments` (selected mode only), the errors, `rowError(i)` and the spread helper line. `plan` is `planOnboarding` with deterministic placeholder ids, and `preview` is `projectContract` over that plan.
+  - `lib/features/contracts/presentation/screens/onboard_contract_screen.dart` (new): route `/contracts/onboard?borrowerId=`.
+    - Collectors get `_leave('Only owners can onboard loans.')`.
+    - Sections: the toggle, borrower, Step 1 "Original loan", Step 2 "Original dates & schedule", Step 3 "Collected so far", Step 4 "As of today" (inline on compact and medium), and Optional (previous ref ≤ 40, guarantor, purpose, notes).
+    - Sticky footer: "Outstanding ₹X · N overdue", **Onboard loan**, and "Works offline · syncs automatically".
+    - Expanded: the form is flex 7 and the preview pane is flex 5, each with its own scroll, so the preview stays put inside the 1280 max width.
+  - New widgets:
+    - `loan_kind_toggle.dart`: "New loan · Existing loan".
+    - `past_payments_section.dart`: the Opening total / Itemised toggle, the opening amount + mode + helper, and the itemised rows (newest first, running total vs sanctioned, add / edit / delete, "Fill from schedule", per-row errors, lazily built in a bounded list).
+    - `past_payment_sheet.dart`: the row editor through `showAdaptiveSheet` (bottom sheet on compact, 560 dialog on wider), with date [disbursedOn, today], amount, mode and reference.
+    - `onboarding_preview.dart`: Collected / Outstanding / Overdue tiles ("N installments · highest D days late"), the maturity and cycles line, the timeline and the auto-extension note, with a semantics summary.
+    - `projected_schedule_preview.dart`: `ProjectedRow` pills: Paid, Partially paid · Nd late, Overdue · N days late, Due today, Upcoming and Added.
+  - `lib/features/contracts/presentation/widgets/loan_terms_controller.dart`: adds `disbursedOn` / `disbursedOnChanged`. The default first date and collection day follow the disbursement. A picked first date is kept while it stays within [d, d + 366]. Create and rollover never set it, so they are unchanged.
+  - `loan_schedule_fields.dart`: new `firstDueMin`, `firstDueMax`, `firstDueErrorText` and `showSchedulePreview` parameters. The defaults keep today's behaviour.
+  - `loan_amount_fields.dart`: new `upfrontHelperText` ("Enter what was deducted at disbursement. Unknown? Enter ₹0.").
+  - `lib/core/routing/app_router.dart`: `AppRoutes.onboardContractPath` / `onboardContract(...)`, with the route declared before `/contracts/:id`.
+  - Entry points:
+    - `create_contract_screen.dart`: the `LoanKindToggle` at the top;
+    - `borrower_profile_view.dart`: a secondary "Existing loan" button beside "+ New loan".
+    
+    Both are owner only. The New loan screen is already owner only, and the profile button sits behind `isOwner`.
+  - Labels and actions:
+    - `contract_header_card.dart`: the "Onboarded {d MMM yyyy}" pill (history icon) and "Ref {previousRef}".
+    - `active_contract_card.dart`: the same pill and Ref on the borrower card.
+    - `loan_label.dart`: `onboardedLabel` and `onboardingPaymentLabel`.
+    - `payment_ledger_list.dart` and `ledger_entry_tile.dart` (borrower Ledger and Recent receipts): rows read "Opening balance" or "Recorded at onboarding".
+    - `contract_detail_screen.dart`:
+      - an owner overflow menu with "Reverse opening balance" (only while unreversed opening rows exist and the status allows it);
+      - the ledger's Reverse is hidden on rolledOver and cancelled contracts;
+      - the "Onboarding incomplete: X of Y payments synced" banner, plus the owner "Add missing onboarding payment" button.
+    - New `payments/presentation/widgets/reverse_opening_dialog.dart`: reason required, shows the row count and total.
+    - New `payments/presentation/widgets/add_onboarding_payment_sheet.dart`: date [disbursedOn, onboardedOn], amount ≤ outstanding, mode and reference. It offers no receipt share.
+  - `lib/core/theme/app_theme.dart`: new token `AppSizes.boundedListMaxHeight` (420).
+- **Tests**
+  - New:
+    - `test/features/contracts/onboard_contract_screen_test.dart` (10): at 400 and 1024 widths, the opening-total flow (helper, preview values, save, detail equals preview, docs), the itemised flow (fill from schedule, delete, add via sheet or dialog, offline "Saved · will sync"), and inline validation per field and per row. Plus O2 single mode, text scale 1.3×, collector sent away, and the New / Existing toggle.
+    - `test/features/contracts/onboarded_contract_detail_test.dart` (8): labels at 400 and 1024; the incomplete banner and repair at 400 and 1024; a collector sees the banner only; "Reverse opening balance"; L2 hiding for rolledOver and cancelled.
+    - `test/features/payments/s7c_onboarding_repair_test.dart` (12): the L2 guards, `OnboardingSync`, and `addOnboardingPayment` (dating, `lastPaymentOn` only moves forward, close at ₹0, refusals).
+    - `test/domain/ledger/s7c_onboarded_regression_test.dart` (13, Task 22).
+    - `firebase/test/sprint7c_onboarding.test.js` (28).
+  - Updated for the user decision and M1/M2:
+    - `test/domain/ledger/onboarding_test.dart` (+2): "row due today stays open", "disbursed today", "first row on disbursedOn".
+    - `test/domain/ledger/tester/s7b_onboarding_test.dart`: E4 now asserts the new behaviour.
+    - `test/features/contracts/onboard_contract_repository_test.dart` (+4: `batchLimit` 100, totals in batch 1, standard null).
+    - `test/features/contracts/tester/s7b_onboard_repository_test.dart`: new chunk sizes and the contract key set.
+    - `firebase/test/sprint7b_onboarding.test.js` and `firebase/test/tester_s7b.test.js`: contract payloads carry the M2 fields, and the replay mirrors the installment spill layout.
+    - `test/features/borrowers/borrowers_screen_test.dart`: the "Existing loan" button is shown to owners only.
+    - `test/features/contracts/contract_widget_harness.dart`: the onboard route and `extraOverrides`.
+
+Key decisions:
+- **L1 (user decision 2026-11-26).**
+  - The spread walks the rows with `dueDate < today`.
+  - Edge case: a loan disbursed **today** with an opening total has no earlier date, so it is dated `disbursedOn` (= today). This is the only case where opening cash lands on today.
+  - If the advance is larger than today's row, FIFO still marks today's row paid. The *cash* is dated on the last earlier due date, so Received today stays ₹0.
+- **M1.**
+  - Installments use `BalancedChunks.spill`. They fill the room left after the payments in the last payment batch, then batches of their own.
+  - Each batch's `totalPaidPaise` increment is still exactly that batch's payments. Spill ops carry no money.
+  - Rules check: an installment create needs only `member && validNewInstallment && owner` (no `getAfter(contract)`), so an installment-only batch lands on its own. This is proven by an emulator test.
+  - New layouts:
+    - 366 rows + 300 payments: [450, 219] (was [450, 220]).
+    - 1,100 payments: [450, 450, 450, 121], still 4 batches.
+    - `batchLimit` 100: batch 1 is contract + disbursement + nextLoanNo + 97 payments.
+- **M2.** The counts and totals are immutable facts written in chunk 1.
+  - "Synced" counts the `origin: onboarding`, type `payment` docs of the contract **including reversed ones**. Reversals are separate docs, so a legitimate correction never raises a false "incomplete". A payment added through "Add missing onboarding payment" counts toward X.
+  - The repair writes an itemised (`openingBalance: false`) onboarding payment through the existing `onboardingTx` rule. It moves `lastPaymentOn` only forward and closes the loan at ₹0 like any payment.
+  - The repair is offered only on **active** contracts.
+- **M2 rules are slightly stricter than asked** (all safe for honest clients):
+  - `onboardedPaymentCount ≤ 1100`;
+  - `onboardedTotalPaise < sanctionedPaise`;
+  - chunk-1 `totalPaidPaise ≤ onboardedTotalPaise`.
+- **L2.** Reversal is blocked for `rolledOver` and `cancelled` in both the UI and the repository. `closed` stays reversible, because it reopens. Rules are unchanged; this is a client-side guard, as the brief asked.
+- **O2.** The screen keeps both inputs while you switch, but `OnboardingDraft.pastPayments` returns **only** the selected mode, and the save sends exactly that. A widget test asserts it.
+- **Preview equals saved.** `OnboardingDraft.preview` runs the same `planOnboarding` (with placeholder uuids) and `projectContract` the detail uses. The widget test asserts the detail's overdue banner equals the preview's figures (5 overdue · ₹45,000 · 49d late).
+- **Collector route.** There is no router redirect, so the screen itself shows "Only owners can onboard loans." and leaves, as the acceptance criterion requires. The rules deny the writes anyway.
+- **Receipt share.** It only exists after Record payment, which onboarding never uses. The add-missing sheet deliberately has no share step.
+- **Snackbars.** The submit uses `removeCurrentSnackBar()` first, so a pending "Filled N payments" message never hides "Saved · will sync".
+- **No new packages.** One token added: `boundedListMaxHeight`.
+
+Known limitations:
+- **Notification scheduler.** It does not exist yet (Sprint 8). Task 22 instead asserts its two inputs: the overdue list contains the onboarded shortfall, and the upcoming-due feed holds no past rows.
+- **Stitch.** The MCP tools were not loaded. As the design allows, the screen is composed from the existing screen 4 (form) and screen 7 (timeline) widgets; no new mock.
+- **FLAG_SECURE** is not applied by this screen; no other balance screen sets it in code today either. Leave it to Sprint 8's responsive and security pass.
+- **On-device check.** The on-device sprint goal (real offline onboarding and sync) needs the rules deployed first. Not run.
+
+**Task 22 benchmark** (`flutter test`, JIT debug on the dev machine, median of 25 runs, daily loan 366 rows × 1,100 payments):
+- `projectContract`: **0.23–0.29 ms**;
+- `planOnboarding` + `projectContract`: **1.4–1.9 ms**;
+- `OnboardingDraft.preview` (validate + spread + plan + project): **0.72–0.78 ms**.
+
+Budgets asserted: 16 ms for projection, 50 ms for plan + project and for the preview. All are far below one frame.
+
+Verification:
+- `dart run build_runner build --delete-conflicting-outputs`: OK.
+- `flutter analyze`: **No issues found.**
+- `flutter test`: **1102 passed, 0 failed** (baseline 1053 + 49).
+- `flutter test test/domain/ledger/onboarding_test.dart test/domain/ledger/tester/s7b_onboarding_test.dart --coverage --branch-coverage`: `onboarding.dart` has **101/101 lines and 43/43 branches** covered.
+- `cd firebase && npm test`: **14 files, 519 passed** (baseline 491 + 28 new).
+- `flutter build apk --debug --target-platform android-x64`: built `build/app/outputs/flutter-apk/app-debug.apk`.
+- Nothing was committed, deployed or installed.
+
+**REDEPLOY REQUIRED** (`firebase deploy --only firestore:rules`, a human step that was not run). Deploy before installing any build that contains the Sprint 7c screen. Sprint 7b's rules are still undeployed too, so this one deploy covers both.
+
+Rules changes in this sprint (`firebase/firestore.rules`):
+1. **Standard contract create:** `onboardedPaymentCount` and `onboardedTotalPaise` must be absent or null.
+2. **Onboarded contract create (`validOnboarded`):**
+   - `onboardedPaymentCount` must be an int from 0 to 1,100;
+   - `onboardedTotalPaise` must be an int ≥ 0 and < `sanctionedPaise`;
+   - `totalPaidPaise` must be ≤ `onboardedTotalPaise`.
+3. **Owner contract update:** `onboardedPaymentCount` and `onboardedTotalPaise` join the immutable keys (`affectedKeys().hasAny`). The collector branch was already `hasOnly`.
+4. **Attempt 2 (R1):** installment create also requires `existsAfter(contract)`, so there are no orphan rows.
+5. **Attempt 2 (R2):** an onboarding payment's `amountPaise` must be ≤ `onboardedTotalPaise`. See "Fixes for Module Lead + Tester findings (Sprint 7c, attempt 2)" below.
+
+Compatibility after the deploy:
+- Older app builds keep working for standard contracts, because the fields are absent.
+- An onboarding from a 7b-era build (no M2 fields) would now be denied. No such build was released.
+
+
+**Module Lead — Sprint 7c Review (attempt 1):**
+Date: 2026-11-26
+
+- **Re-ran independently:** `flutter analyze` is clean, `flutter test` passes 1102/1102 and `npm test` passes 519/519. One vitest worker crashed when the rules suite ran alongside `flutter test`; a solo rerun was clean.
+- **Checklist:** tokens, tabular figures, IST clock, domain math, adaptive sheets and the 7/5 layout, 48dp targets, owner gating mirrored in the rules, no mock-error copy, and one widget per file all pass.
+- **Verified OK:**
+  - M2 bounds and immutability, and the banner counting reversed payments;
+  - L1 (the spread uses only rows due before today);
+  - the preview equals the saved projection;
+  - O2;
+  - routing (`/onboard` sits before `/:id`; there is no collector deep link; the collector block is UI-only, with the rules and repository also refusing);
+  - deploy compatibility for older builds;
+  - no regressions.
+- **R1 (medium):** orphan installments.
+  - Spill installment-only batches can land when batch 1 is denied, because the installment rule has no contract check.
+  - The reverse also happens: a contract lands without its schedule, and this goes undetected.
+  - Fix:
+    - (a) the rules get `existsAfter(contract)` on installment create, and the `sprint7c_onboarding.test.js:308` test flips to a failure;
+    - (b) a batch-1-first op kind, so installments fill batch 1 ahead of payments (370 ops at the default), and only overflow when `batchLimit` is small.
+- **R2 (medium):** the repair can double-count cash, when the "missing" batch is merely still queued on the onboarding phone.
+  - Fix:
+    - cap the repair at `onboardedTotal − Σ(gross onboarding payments)` and show "₹ missing";
+    - enable it only on a server-confirmed snapshot;
+    - add copy saying queued payments may still land;
+    - add an overshoot banner ("exceeds what was onboarded").
+- **L3 (low):** "Fill from schedule" defaults to today, which fills today's installment. Default it to the last due date before today instead.
+- **Safe deploy order:**
+  1. apply R1(a);
+  2. `firebase deploy --only firestore:rules` (covers 7b and 7c);
+  3. production smoke test: a 366-row standard create and a daily onboarding with 300+ payments;
+  4. only then install a 7c build.
+- **Verdict: CHANGES REQUESTED** (R1, R2, L3).
+
+**Tester — Sprint 7c Results (attempt 1):**
+
+New tests (test only):
+- `test/features/contracts/tester/s7c_onboard_screen_test.dart` (17)
+- `test/features/payments/tester/s7c_repair_test.dart` (11, with a `_PartialDb` fake that lands only the first N batches)
+- `firebase/test/tester_s7c.test.js` (26)
+
+44 cases covered:
+- **Opening total:** the spread helper line, and today's row stays open (L1).
+- **Preview and save:** the preview equals the saved detail. Labels, Ref, the Onboarded pill and the stamps are correct.
+- **Dashboard:** Received today stays ₹0.
+- **Save paths:** offline save; the itemised Fill / edit / delete flow; O2 sends only the selected mode.
+- **Validation:** inline errors; the 3-year picker bounds; first-due bounds; the 40-character ref; fully repaid blocked; upfront ₹0.
+- **Entry points:** owner, and collector (blocked everywhere).
+- **Layout:** 360 at 1.3× text and 1024 (7/5 layout, dialog editor).
+- **M1:** a small `batchLimit`, with every landed batch prefix still balanced.
+- **M2:** a real partial landing shows the banner; the owner repair; a reversed payment raises no false banner; collectors get no repair.
+- **L2:** rolledOver and cancelled are hidden; closed can still reverse and reopen.
+- **Reverse opening balance UI.**
+- **Rules:** M2 bounds and immutability, the repair window and roles, spill batches.
+
+Full runs:
+- `flutter analyze`: clean;
+- `flutter test`: 1130/1130;
+- `npm test`: 545/545.
+
+Bugs Found: none.
+
+Observations:
+- **O1 (low):** the repair defaults its date to `onboardedOn`, so on the onboarding day it counts in Received today. It is also written as itemised (`openingBalance: false`) even on an opening-total loan, so Reverse opening balance skips it.
+- **O2 (medium, = ML R2):** a repair from a second device can double-count when the batches are still queued. The rules don't cap a repair against `onboardedTotalPaise`.
+- **O3 / O4:** info only.
+
+Human verification (on device), after the rules deploy:
+1. Offline weekly opening-total onboarding, then sync; the detail equals the preview.
+2. Offline daily itemised onboarding, fully synced, with no banner.
+3. Dashboard: Received today ₹0, and cash shown on its original dates.
+4. The real date pickers.
+5. Tablet 7/5 layout and dialogs, and 1.3× text on a phone.
+6. A collector is blocked, including a real write denied.
+7. Two devices, with a sync interrupted mid-way: the banner and the repair.
+
+Sprint Test Summary: 54 passed, 0 failed.
+
+**Fixes for Module Lead + Tester findings (Sprint 7c, attempt 2):**
+
+- **R1 (a), rules: no orphan installments.**
+  - Installment create now also requires `existsAfter(companies/{cid}/contracts/{contractId})`.
+  - Every existing writer still passes. Standard create and rollover write the contract in the same batch, reschedule writes onto a stored contract, and older builds behave the same. The 7b and 7c replays also stay green.
+  - Flipped from allowed to denied:
+    - `sprint7c_onboarding.test.js`, "installment-only batch without its contract";
+    - `tester_s7c.test.js` case 44, "spill batch landing before chunk 1".
+  - New tests:
+    - an installment-only batch for a stored contract is allowed;
+    - when batch 1 is denied (a fully repaid total), every overflow installment batch is denied too, and no row or contract lands.
+- **R1 (b), client: the schedule is atomic with the contract.**
+  - New `BalancedChunks.early(op)`. Early ops take batch 1 ahead of the items; only what does not fit overflows, like spill.
+  - `OnboardingPlan.chunks` adds the installments as early ops.
+  - At the default limit, batch 1 is 1 contract op + 2 fixed (disbursement, `nextLoanNo`) + 366 installments = **369** ops before payments, leaving room for 81 payments. The brief's "370 / 80·449·449·122" counts one op too many.
+    - Actual payment chunks for 1,100 payments: **[81, 449, 449, 121]**.
+    - Ops per batch: [450, 450, 450, 122].
+    - 366 rows + 300 payments: [450, 220].
+  - These match the 7b layouts again.
+  - Every batch's increment still equals that batch's payments.
+- **R2 / Tester O2: the repair can no longer double-count.**
+  - **`OnboardingSync`** now also carries:
+    - `gross`: Σ of all onboarding payments, reversed included;
+    - `onboardedTotal`;
+    - `missing` = onboardedTotal − gross, floored at ₹0;
+    - `isOvershoot` / `overshoot`;
+    - `repairCap(outstanding)` = min(missing, outstanding);
+    - `isOpeningTotal`.
+  - Incomplete now means count < expected **or** missing > ₹0.
+  - **`addOnboardingPayment` refuses:**
+    - "Nothing is missing from this onboarding.";
+    - amounts above the cap: "At most ₹X is missing from this onboarding."
+  - **Banner:** "Onboarding incomplete: X of Y payments synced · ₹Z missing. Payments still queued on the phone that onboarded this loan will appear when it syncs. Check that phone first."
+  - **Server-confirmed snapshot:** new `contractTransactionsConfirmedProvider` (`watchContractTransactionsConfirmed`, `includeMetadataChanges`, `!isFromCache && !hasPendingWrites`, the `company_repository.dart:179` pattern). The repair button is enabled only when it is true; otherwise it shows a disabled "Waiting for sync…".
+  - **Sheet:** shows "₹X missing · at most ₹Y can be added", the same queued-payments copy, and inline cap validation.
+  - **Overshoot banner:** "Onboarding payments exceed what was onboarded by ₹X. Review and reverse the duplicate." It shows "by N payments" when only the count is over, and it replaces the incomplete banner and the repair.
+  - **Server side (cheap and safe, added):** `onboardingTx` now denies any single onboarding *payment* with `amountPaise > onboardedTotalPaise`.
+  - **Limitation:** a true Σ cap cannot be expressed in rules, which have no aggregation. A determined client could still add several payments that are each within the bound. The client cap and the overshoot banner cover honest devices.
+- **L3.** "Fill from schedule" opens its picker on the last due date before today (or yesterday, clamped to the first due date). Today can still be picked.
+- **Tester O1.**
+  - **Default date:** new `defaultRepairDate(snapshot, today)` picks the first base due date after the newest landed onboarding payment that has no payment of its own (the gap). Failing that, the last due date before today; failing that, `disbursedOn`. It never picks today unless the loan was disbursed today.
+  - **Opening-total loans:** when the landed onboarding payments are opening-balance rows, the repair is written with `openingBalance: true` and the "Opening balance" note, so "Reverse opening balance" covers it. Itemised loans keep `false`.
+  - If nothing has landed yet, the sheet shows a "Part of an opening total" switch (default on).
+
+Tests added or changed:
+- **New:**
+  - `test/core/firebase/balanced_chunks_test.dart` (+2): early ops are first in batch 1; overflow only at a small limit.
+  - `test/features/payments/s7c_onboarding_repair_test.dart`:
+    - the repair group is rebuilt on partial snapshots (the old tests assumed nothing was missing);
+    - the R2 cap, including a reversed payment counting as onboarded;
+    - overshoot detection;
+    - O1 opening-balance repair;
+    - `defaultRepairDate` (3 cases).
+    - Removed: the "repair closes the loan" test. Under the cap a repair can only clear the balance when live payments overlap, so the path stays in code but is no longer unit-tested.
+  - `test/features/contracts/onboarded_contract_detail_test.dart` (+4):
+    - the banner and sheet amounts;
+    - the cap error inline;
+    - the gap date 19 Sep;
+    - the repair labelled "Opening balance";
+    - "Waiting for sync…" at 400 and 1024;
+    - the overshoot banner at 400 and 1024.
+  - `test/features/contracts/onboard_contract_screen_test.dart` (+1): L3 default and today allowed.
+  - `firebase/test/sprint7c_onboarding.test.js` (+3): the R1 cases and the single-payment bound.
+- **Expectations changed legitimately by the fixes:**
+  - `onboard_contract_repository_test.dart`:
+    - 300 payments: [81, 219] and ops [450, 220] (was [300] / [450, 219]);
+    - `batchLimit` 100: chunks [0, 99, 99, 99, 3] and ops [100 × 6, 73].
+  - Tester `s7b_onboard_repository_test.dart`:
+    - 300: [81, 219] / [450, 220] / sums [₹8,100, ₹21,900];
+    - 1,100: ops [450, 450, 450, 122] / sums [₹810, ₹4,490, ₹4,490, ₹1,210].
+  - Tester `firebase/test/tester_s7b.test.js`: the replay builder mirrors installments-first, and `chunkSizes` takes nInst. Expected sizes: 300 → [81, 219], 1,100 → [81, 449, 449, 121], (250, 366, limit 100) → [0, 99, 99, 52]. The test name now reads "450 + 220 ops".
+  - Tester `test/features/payments/tester/s7c_repair_test.dart`:
+    - "chunk 1 only" → "first two batches only" (`_PartialDb(2)`), since batch 1 now holds the schedule and no payments at `batchLimit` 100;
+    - the repair loop's last step adds the remaining missing cash, because the banner now stays until the onboarded total is back;
+    - one `ensureVisible` was dropped, because it scrolled the now taller banner out of the lazily built list.
+  - Tester `firebase/test/tester_s7c.test.js` case 44: allowed → denied (R1a).
+
+Verification (attempt 2):
+- `dart run build_runner build --delete-conflicting-outputs`: OK.
+- `flutter analyze`: **No issues found.**
+- `flutter test`: **1141 passed, 0 failed** (baseline 1130 + 11).
+- `cd firebase && npm test` (run alone): **15 files, 548 passed** (baseline 545 + 3).
+- `flutter build apk --debug --target-platform android-x64`: built.
+- Benchmark unchanged: projection about 0.3 ms, plan + project about 1.5 ms, preview about 0.7 ms.
+- Nothing was committed, deployed or installed.
+
+**REDEPLOY REQUIRED (updated for attempt 2):** `firebase deploy --only firestore:rules`, a human step that was not run. It covers 7b and 7c.
+
+Additional rules changes in attempt 2:
+1. **R1, installment create:** also requires `existsAfter(contract)`.
+2. **R2, `onboardingTx`:** an onboarding payment's `amountPaise` must be ≤ the contract's `onboardedTotalPaise`.
+
+Safe order (Module Lead):
+1. Deploy the rules.
+2. Run a production smoke test: a 366-row standard create, and a daily onboarding with 300+ payments.
+3. Only then install a 7c build.
+
+
+**Production smoke-test fix (Sprint 7c, attempt 3):**
+
+- **Evidence:** live project, rules deployed, emulator app, owner. The loan was a daily onboarding of ₹1,00,000 at ₹300/day: 334 installments and 328 itemised payments.
+  - **Batch 1 was accepted:** the contract, 334 installments (early), the disbursement, `nextLoanNo` and 113 payments.
+  - **Batch 2 was rejected** with `PERMISSION_DENIED` at `companies/…/contracts/884b17af…`. It held the contract increment and 215 onboarding payments.
+  - A single "Add missing onboarding payment" was then accepted, and the banner went to 114 of 328.
+  - **Conclusion:** the rule logic is correct. Production enforces a per-batch rule-evaluation budget that the emulator does not. Each onboarding tx runs `onboardingTx` (a `getAfter(contract)` plus date and mode checks).
+- **Fix: a money-item cap per balanced batch, separate from the op limit.**
+  - `lib/core/firebase/balanced_chunks.dart`:
+    - new `maxLedgerItemsPerBatch = 100`, documented with the evidence above (safely below the 113 that passed);
+    - `BalancedChunks` takes `maxItems` (default 100);
+    - `firstRoom = min(limit − fixed − 1 − earlyInFirst, maxItems)` and `laterRoom = min(limit − 1, maxItems)`;
+    - early and spill ops (installments, flips; cheap rules) still fill up to the 450-op limit.
+  - Threaded through:
+    - `OnboardingPlan.chunks(maxItems:)`;
+    - `ContractRepository.batchMaxItems` (used by `onboardContract`);
+    - `PaymentRepository.batchMaxItems` (used by `reverseOpeningBalance`).
+  - Docs updated: `maxPastPayments` now reads "up to 12 batches", and the `onboardContract` / `reverseOpeningBalance` comments are updated. No code capped the batch count, so there was nothing else to relax.
+  - **New layouts:**
+    - The smoke-test loan: [100, 100, 100, 28] payments, ops [437, 101, 101, 29].
+    - 366 rows + 300 payments: [81, 100, 100, 19] (4 batches).
+    - 1,100 payments with 366 rows: 81 + 10 × 100 + 19, i.e. **12 batches**. With a shorter schedule it is 11.
+- **M2 is unaffected:** `onboardedPaymentCount` / `onboardedTotalPaise` are still written in batch 1, the banner and repair count docs (not batches), and every batch still balances its own payments.
+- **`ChunkedBatch` users, reviewed and left alone:**
+  - Record payment, close with waiver and reverse payment: ≤ 3 primary docs plus `contractActive` flip updates. The flip updates use cheap rules (`onlyChanged`, no `get`).
+  - Rollover: its primary batch has the same shape as a standard create (contract + ≤ 366 installments + 2 live txs + 2 updates). Production already accepted 334 installments in one batch.
+- **Tests:**
+  - New `test/features/contracts/s7c_batch_budget_test.dart` (4), using a recording fake that logs each committed batch:
+    - 328 and 1,100 payments never put more than 100 payments in a batch, batch 1 still holds the whole schedule, and M2 sync is complete;
+    - the smoke-test layout;
+    - reverse opening balance over 250 rows writes [100, 100, 50] reversals per batch, and totalPaid returns to ₹0.
+  - `balanced_chunks_test.dart` (+1): the `maxItems` cap.
+  - Expectations updated:
+    - `onboard_contract_repository_test.dart`: 300 → [81, 100, 100, 19] / [450, 101, 101, 20]; 600 → 7 batches; 1,100 → 12; every batch ≤ 100 items.
+    - Tester `s7b_onboard_repository_test.dart`: the 300 and 1,100 layouts and sums.
+    - Tester `firebase/test/tester_s7b.test.js`: `MAX_ITEMS = 100` in the replay `chunkSizes`, plus the expected sizes, including 328/334 → [100, 100, 100, 28]; replay titles updated to 4 and 12 batches.
+    - `firebase/test/sprint7b_onboarding.test.js`: the later-chunk helper defaults to 100 payments.
+- **Verification:**
+  - `flutter analyze`: clean.
+  - `flutter test`: **1146/1146** (baseline 1141 + 5).
+  - `cd firebase && npm test` (alone): **548/548**.
+  - `flutter build apk --debug --target-platform android-x64`: built.
+  - No rules change; nothing deployed, committed or installed.
+- **Human step:** repeat the smoke test with this build. Expect 4 onboarding batches for the 328-payment loan, all accepted. Re-check a 1,100-payment onboarding on the live project once.
+
+**Production root cause + sync-list fix (Sprint 7c, attempt 4):**
+
+- **Evidence chain** (live project, emulator app, rules deployed):
+  1. Daily onboarding, ₹1,00,000 at ₹300/day, 334 installments, 328 payments. Batch 1 was accepted (contract + 334 installments + disbursement + `nextLoanNo` + 113 payments). Batch 2 (contract increment + 215 payments) was rejected with PERMISSION_DENIED.
+  2. Attempt 3 diagnosed a per-batch rule budget and capped batches at 100 money items. **That diagnosis was wrong:** with the 100 cap, batches 2–4 (100, 100 and 28 payments) were all denied, and with a 10 cap all 32 later batches were denied.
+  3. An experiment that committed batch 1, **awaited its server ack**, and only then committed the rest synced all 328 payments with 0 rejections (Loan #08).
+  4. **Root cause:** production evaluated the later batches before batch 1 (437 writes) had landed. The contract did not exist yet, so the contract `update` and the onboarding txs' `getAfter(contract)` failed. The emulator applies batches serially, so the tests never saw it.
+  5. The coordinator reverted their temporary rule change and redeployed. Their experiment in `BalancedChunks.commit()` is replaced by the design below.
+- **Fix: the "sync list" (user decision, offline-safe).**
+  - **Batch 1** (`OnboardingPlan.firstBatch`, the only write `onboardContract` sends) contains:
+    - the contract, with `totalPaidPaise: increment(Σ batch-1 payments)`;
+    - every installment, so the schedule is always atomic with the contract (`firstPaymentCount` throws if a limit could not hold it; never at 450);
+    - the disbursement and `nextLoanNo`;
+    - up to 100 payments;
+    - when more remain, the durable queue doc **`companies/{cid}/onboardingQueues/{contractId}`**.
+  - **Queue doc** (`OnboardingQueue`): `contractId`, `status` (pending → complete | cancelled), and `entries`. Each entry holds the pre-generated tx uuid, paidOn, amount, mode, reference and openingBalance, with compact keys `i/d/a/m/r/o`, about 100 B each, so 1,100 entries is roughly 110 KB, far below 1 MiB. Also `count`, `totalPaise`, `createdBy`, `createdAt`, `updatedAt` and `schemaVersion`. The device that onboarded never loses the plan, even offline or after an app kill.
+  - **Resumer:** `ContractRepository.resumeOnboarding` (owner only) works like this:
+    - it reads the queue, the contract and the contract's transactions **from the server** (`Source.server`);
+    - it stops if the queue is not pending, if the contract is not on the server yet (`notReady`), if the contract is no longer active (`stopped`), or when offline;
+    - it skips queued ids that already exist (idempotent across devices and retries);
+    - it writes the rest in balanced batches of at most 100, **one at a time, each awaiting its ack**; every batch increments `totalPaidPaise` by exactly its own payments;
+    - it marks the queue `complete` when all have landed. The doc is never deleted: it is a small audit record, and the rules forbid delete.
+    - If two devices race, a batch that re-sends an existing id is denied as a whole (a transaction cannot be overwritten), so totals stay balanced. A rules test proves it.
+  - **Triggers:**
+    - `ContractActions.onboard`, right after a synced batch-1 ack;
+    - `onboardingAutoResumeProvider`, watched by `App`. For owners only, it listens to pending queues (`includeMetadataChanges`, so batch 1 reaching the server re-triggers it) and runs on every app resume (`AppLifecycleListener`).
+    - The resumer runs once per contract at a time on a device. Collectors never resume.
+  - **UI:**
+    - While a queue is pending, contract detail shows "Finishing onboarding sync… X of Y payments. This completes automatically on an owner's phone when it is online." (info, not an error), with no repair.
+    - The M2 incomplete banner and "Add missing onboarding payment" remain only as a fallback when there is no pending queue, for example the four broken loans from earlier builds.
+    - The overshoot banner is unchanged.
+- **Reverse opening balance / Cancel batches.** These are on an existing contract, so they don't depend on each other, but they now go through `commitInOrder`: sequential while acks arrive within 3 s; if one is not acknowledged in time (offline), the rest are committed at once and queue in order.
+- **Cancel onboarded loan** (user decision; cleans up #04, #05 and karthik's two partial loans, and covers the deferred "undo a wrong onboarding"):
+  - It is an owner action on onboarded contracts that are active or closed, and it needs a reason.
+  - `PaymentRepository.cancelOnboardedLoan` reverses every unreversed onboarding payment, each dated on its original date with mode and origin copied, in balanced batches of ≤ 100. The last batch sets `status: cancelled` + `closedAt`, marks a pending queue cancelled, and flips `contractActive: false` on every doc.
+  - It is refused while live payments or waivers are unreversed ("Reverse the payments recorded after onboarding first."). A failed run leaves the loan active, so it can simply be run again.
+  - UI: contract menu → "Cancel onboarded loan" (new `cancel_onboarded_dialog.dart`).
+  - Rules: no change was needed. The owner contract update already allows `status: cancelled`, the collector branch can't, and onboarding reversals pass `onboardingTx`. All three are proven by rules tests.
+- **KPI exclusion.**
+  - Cancelled loans are not in the active projections, and are not history contracts (closed / rolled over), so they never count in net disbursed, receivable, overdue, the tracker or calendar rows. Lent was already excluded.
+  - Their transactions did reach the dashboard through the inactive-tx history listener. Reversals dated on the originals net them to ₹0, but payment counts on calendar days still showed.
+  - New `dashboardTransactions` in `portfolio_providers.dart` keeps inactive txs only of history contracts, so a cancelled loan is excluded explicitly. Tested.
+  - The borrower profile still lists the reversed pairs in its ledger (audit); its Collected nets to ₹0.
+- **Files:**
+  - New:
+    - `lib/features/contracts/data/onboarding_queue.dart`
+    - `lib/features/contracts/application/onboarding_resumer.dart` (+ `.g.dart`)
+    - `lib/features/payments/presentation/widgets/cancel_onboarded_dialog.dart`
+  - Changed:
+    - `onboarding_plan.dart`: `OnboardingLayout`, `layout`, `firstPaymentCount`, `queue`, `firstBatch`, `onboardingChunks`, `onboardingPaymentTx`; `chunks()` removed;
+    - `contract_repository.dart`: batch 1 only, `resumeOnboarding`, `ResumeOnboardingCommand`, `ResumeOutcome`, `resumeGrace`;
+    - `contract_providers.dart`: resume after the ack;
+    - `ledger_snapshot_repository.dart`: queue streams;
+    - `balanced_chunks.dart`: the experiment replaced by `commitInOrder`; the cap's doc comment corrected;
+    - `payment_repository.dart`: cancel;
+    - `payment_providers.dart`;
+    - `contract_detail_screen.dart`: the finishing banner and the menu;
+    - `portfolio_providers.dart`;
+    - `firestore_paths.dart`;
+    - `app.dart`;
+    - `firebase/firestore.rules`.
+- **Tests:**
+  - New:
+    - `test/features/contracts/s7c_sync_list_test.dart` (14): batch 1 + queue shape, no queue when everything fits, 1,100-entry size, the resumer completing in 3 sequential balanced batches, idempotency with 30 already landed, the offline path (`notReady` until batch 1 lands, then complete), a collector never resuming (repository and provider), the owner provider, a cancelled contract stopping, Cancel (≤ 100 per batch, dates, flips, queue cancelled, refusals), and KPI exclusion;
+    - widget tests in `onboarded_contract_detail_test.dart` (+6): "Finishing onboarding sync…" at 400 and 1024, the fallback after a completed queue, a collector seeing "Finishing…" with no Cancel, the Cancel flow, and Cancel blocked while live payments remain;
+    - `firebase/test/sprint7c_queue.test.js` (19): queue create, shape and bounds; resumer ordering; duplicate-id denial; status-only updates; reads; and the cancel writes.
+  - Updated, because they assumed `commit()` fires every batch at once:
+    - `onboard_contract_repository_test.dart`: an `onboardAll` helper (batch 1 + resume); 300 payments → [80, 100, 100, 20] / ops [450, 101, 101, 21]; the small-limit overflow test replaced by a `maxItems` 10 test plus "a limit too small for the schedule throws";
+    - `s7c_batch_budget_test.dart`: resume after batch 1; smoke layout ops [438, 101, 101, 29];
+    - Tester `s7b_onboard_repository_test.dart`: 300 → [80, 100, 100, 20], 1,100 → 80 + 10 × 100 + 20, resume added;
+    - Tester `s7c_repair_test.dart`: `_onboardOn` = batch 1 + resumer with `maxItems`; partial-landing cases model pre-attempt-4 data via `legacyPartial` (no queue), so the repair fallback is still covered; the menu assertion moved because "Cancel onboarded loan" now keeps the menu;
+    - Tester `firebase/test/tester_s7b.test.js`: the replay writes batch 1 with the queue doc and commits later batches sequentially; sizes are [80, …].
+  - **Known test-harness limit:** `fake_cloud_firestore` does not re-emit a converter-typed doc listener for an untyped batch `update`, so the Cancel widget test asserts the stored status rather than the "Cancelled" pill.
+- **Verification:**
+  - `dart run build_runner build`: OK.
+  - `flutter analyze`: clean.
+  - `flutter test`: **1166/1166** (baseline 1146 + 20).
+  - `cd firebase && npm test` (alone): **16 files, 567/567** (baseline 548 + 19).
+  - `flutter build apk --debug --target-platform android-x64`: built.
+  - Nothing was committed, deployed or installed.
+- **REDEPLOY REQUIRED** (`firebase deploy --only firestore:rules`; the coordinator deploys after review). New rules block `companies/{cid}/onboardingQueues/{contractId}`:
+  - read: members;
+  - create: owner only, in the same batch as a new onboarded contract (`!exists` before, `existsAfter` after, `origin == 'onboarded'`), with a key whitelist, `status == 'pending'`, 1–1,100 entries, `count == entries.size()`, `totalPaise` ≥ 0, `createdBy` = caller, and count and total ≤ the contract's `onboardedPaymentCount` / `onboardedTotalPaise`;
+  - update: owner only, `status` and `updatedAt` only, from pending to complete or cancelled;
+  - delete: never.
+  - Without the deploy, any onboarding with more than one batch's payments fails at batch 1, because the queue doc has no rule. Smaller onboardings (no queue) work either way.
+- **Human steps after the deploy:**
+  1. Re-run the smoke test: a 328-payment daily onboarding should show "Finishing onboarding sync…" briefly, then complete.
+  2. Onboard offline, kill the app, reopen it online, and confirm it completes on resume.
+  3. Use "Cancel onboarded loan" on #04, #05 and karthik's two partial loans.
+
+**Module Lead attempt-4 review + fixes (Sprint 7c, attempt 5):** the core ordering fix PASSED; the findings below are fixed.
+
+- **F1 (blocking): Cancel raced a running resumer**, leaving a cancelled loan with unreversed onboarding payments. Fixed in three places:
+  - **(a) Rules:** `onboardingTx` adds `(d.type != 'payment' || c.status != 'cancelled')`. It reuses the existing `getAfter(contract)`, so there is no new document access. It uses `!= 'cancelled'`, not `== 'active'`, because a repair may close the loan in its own batch. Reversals stay allowed.
+  - **(b) Resumer:** it re-reads the queue and the contract (`Source.server`) before EACH batch, and stops (`stopped`) if the queue is not pending or the contract is not active. A queue that was cancelled before the final "complete" update also returns `stopped`.
+  - **(c) Cancel:**
+    - When a queue is pending, it commits the queue → `cancelled` update FIRST and awaits its ack. Without an ack it refuses with "Connect to the internet to cancel a loan that is still syncing."
+    - Reversal targets now come from a SERVER read of the contract's transactions. If that read fails, the cached snapshot is used only when no queue was pending.
+- **F2: recovery for a cancelled-but-not-netted loan.**
+  - `cancelOnboardedBlocker` allows a re-run when `isCancelUnfinished` (cancelled, onboarded, unreversed onboarding payments).
+  - That run writes the reversals plus the `contractActive` flips only, with no status or `closedAt` change.
+  - UI: a "Cancel not finished: N onboarding payments are not reversed yet." banner, a "Finish cancelling" button and menu item (owner), and dialog copy "…The loan stays Cancelled."
+  - Cancel's own reversals don't go through `reversalLockedMessage`, and the rules allow onboarding reversals on a cancelled loan (rules test).
+  - The stale Cancel doc comment is rewritten.
+- **F3:** the `BalancedChunks` class comment now describes `commitInOrder`: sequential acks, the offline fallback, and that it is used only where batches don't depend on each other.
+- **F4:** a pending queue on a loan that is not active (closed or rolled over) shows the M2 incomplete banner (repair only where valid) instead of "Finishing…".
+- **F5:**
+  - **Debounced trigger:** `PendingQueues` carries `ids` and `hasPendingWrites`, and `resumeTriggers` / `resumeTriggerChanged` fire only on the first emission, an id-set change, or `hasPendingWrites` going true → false.
+  - **Retry:** a permission-denied resumed batch is retried once at once (re-read and skip). A second denial returns the new `ResumeOutcome.denied` until the next trigger.
+- **Tests:**
+  - New `test/features/contracts/s7c_attempt5_test.dart` (10):
+    - the race (Cancel lands after the first resumed batch: the resumer stops, totals stay balanced, and Finish cancelling nets every landed payment from a server read);
+    - queue cancelled first;
+    - offline refusal;
+    - server-read targets;
+    - F2 already-netted vs reversals-only;
+    - F5 trigger rules and the stream filter;
+    - retry once, and give up after two denials.
+  - Widget tests (+4): F4, F2 at 400 and 1024 (banner, dialog, reversals), and F2 for a collector.
+  - `firebase/test/sprint7c_queue.test.js` (+5): a resumed batch or single onboarding payment on a cancelled loan is denied; a repair that closes the loan in its batch is allowed; reversals on a cancelled loan are allowed; a collector can't reopen a cancelled loan.
+  - Updated legitimately:
+    - the L2 "cancelled" widget cases (my `onboarded_contract_detail_test.dart` and the Tester's `s7c_repair_test.dart`) now expect only "Finish cancelling" in the menu;
+    - `s7c_sync_list_test.dart` no longer lists "cancelled" among Cancel refusals (it now asserts F2 allows it).
+- **Verification:**
+  - `flutter analyze`: clean.
+  - `flutter test`: **1180/1180** (baseline 1166 + 14).
+  - `cd firebase && npm test` (run alone, afterwards): **572/572** (baseline 567 + 5).
+  - `flutter build apk --debug --target-platform android-x64`: built.
+  - Nothing was committed, deployed or installed.
+- **REDEPLOY REQUIRED** (`firebase deploy --only firestore:rules`; covers 7b, 7c and attempts 2/4/5). Attempt 5 adds one rule: in `onboardingTx`, no onboarding `payment` on a contract whose post-batch status is `cancelled`. Deploy it together with the attempt-4 `onboardingQueues` rules.
+
+**Cancelled-loan detail fix (Sprint 7c, attempt 6):**
+
+- **Bug:** after the attempt-5 live checks passed on production, a cancelled loan's detail page still showed the red overdue banner and overdue-styled rows.
+- **Fix:**
+  - `contract_detail_screen.dart` hides the overdue and excess banners, the auto-extension note and the extension rows when the loan is cancelled, and shows a neutral "This loan is cancelled…" note.
+  - `installment_row_card.dart` renders every row of a cancelled loan neutral: no overdue colour, rail, icon or "Overdue by" text, no Paid tick, no actions, just a "Cancelled" pill and "Not collected · loan cancelled".
+  - The collect/record footer was already hidden for any inactive loan.
+  - The borrower-profile cards never show cancelled loans (active and closed/rolled-over only), so they needed no change.
+- **Tests:** +4 widget tests at 400 and 1024, for a finished and an unfinished cancel.
+- **Verification:** `flutter analyze` is clean; `flutter test` passes **1184/1184**; the APK built. No rules change; nothing was committed or installed.
+
+**Orchestrator re-run (attempt 2):** `flutter analyze` is clean; `flutter test` passes 1141/1141; `npm test` passes 548/548.
+
+**Rules deployed 2026-11-26** to `microfinance-loan-mgr`. This covers 7b + 7c, including the attempt-2 changes (R1 `existsAfter`, R2 single-payment bound). The 7c debug APK is installed on emulator-5554 and awaiting human verification and the production smoke test.
+
+**Human verification + live checks (2026-11-27): PASSED.** The user approved ("commit and push").
+
+Run on the emulator against production, after the attempt-5 rules were deployed:
+1. A daily onboarding with 329 itemised payments synced fully online, with no banner and 0 rejected writes.
+2. An offline onboarding of 329 payments, with the app force-stopped and reopened online, was completed by the resumer.
+3. "Cancel onboarded loan" ran on the 4 broken loans (#04, #05, #06, #07) with 0 rejections. The cancelled-loan detail page now renders in a neutral style (attempt 6).
+4. The dashboard KPIs exclude cancelled loans:
+   - net disbursed ₹6,09,000, 4 active;
+   - receivable ₹2,54,200;
+   - collected ₹3,96,800;
+   - overdue ₹2,300.
+5. A new standard daily loan with 366 installments (#11, ₹366) was created in a single batch, then closed with one payment that flipped all 366 docs. 0 rejections.
+
+The production batch-ordering lesson is in project memory.
+
+Final totals:
+- `flutter analyze`: clean;
+- `flutter test`: 1184/1184;
+- `npm test`: 572/572.
 ---
 
 ## 5. Final Review & Full Regression

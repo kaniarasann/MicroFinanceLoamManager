@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -13,6 +15,7 @@ import '../../auth/application/session_controller.dart';
 import '../../company/application/company_providers.dart';
 import '../data/contract_repository.dart';
 import 'contract_draft.dart';
+import 'onboarding_resumer.dart';
 import 'ledger_providers.dart';
 
 part 'contract_providers.g.dart';
@@ -58,6 +61,17 @@ Stream<List<LedgerTransaction>> contractTransactions(
   return ref
       .watch(ledgerSnapshotRepositoryProvider)
       .watchContractTransactions(cid, contractId);
+}
+
+/// Whether one contract's transactions are server-confirmed on this
+/// device (not from cache, no pending writes). False until known.
+@riverpod
+Stream<bool> contractTransactionsConfirmed(Ref ref, String contractId) {
+  final cid = ref.watch(activeCompanyIdProvider).value;
+  if (cid == null) return Stream<bool>.value(false);
+  return ref
+      .watch(ledgerSnapshotRepositoryProvider)
+      .watchContractTransactionsConfirmed(cid, contractId);
 }
 
 /// Everything the contract detail screen renders.
@@ -264,7 +278,7 @@ class ContractActions {
   }) async {
     final actor = await _actor();
     final company = _ref.read(activeCompanyProvider).value;
-    return _ref
+    final r = await _ref
         .read(contractRepositoryProvider)
         .onboardContract(
           OnboardContractCommand(
@@ -290,6 +304,12 @@ class ContractActions {
             purpose: purpose,
           ),
         );
+    // Batch 1 is on the server: write the queued payments now (the
+    // auto-resumer also catches it later, e.g. after going offline).
+    if (r.outcome == WriteOutcome.synced) {
+      unawaited(_ref.read(onboardingResumerProvider).resume(r.id));
+    }
+    return r;
   }
 
   Future<LedgerWriteResult> reschedule({

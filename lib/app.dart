@@ -6,6 +6,7 @@ import 'core/routing/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/application/lock_controller.dart';
 import 'features/company/application/company_providers.dart';
+import 'features/contracts/application/onboarding_resumer.dart';
 import 'features/onboarding/application/onboarding_providers.dart';
 
 /// Root widget: go_router driven by the session [AuthStage] and the company
@@ -26,11 +27,13 @@ class _AppState extends ConsumerState<App> {
   @override
   Widget build(BuildContext context) {
     // Start the auto-lock lifecycle listener, removed-member handling and
-    // the one-time install-referrer read.
+    // the one-time install-referrer read, and the onboarding resumer.
     ref
       ..watch(lockControllerProvider)
       ..watch(companyAccessGuardProvider)
       ..watch(installReferrerBootstrapProvider)
+      // Finishes onboarding sync lists (owners) on change and app resume.
+      ..watch(onboardingAutoResumeProvider)
       ..listen<String?>(companyNoticeProvider, (_, String? message) {
         if (message == null) return;
         _messenger.currentState?.showSnackBar(

@@ -27,6 +27,10 @@ _Contract _$ContractFromJson(Map<String, dynamic> json) => _Contract(
     json['onboardedOn'] as String?,
   ),
   previousRef: json['previousRef'] as String?,
+  onboardedPaymentCount: (json['onboardedPaymentCount'] as num?)?.toInt(),
+  onboardedTotal: const NullableMoneyPaiseConverter().fromJson(
+    (json['onboardedTotalPaise'] as num?)?.toInt(),
+  ),
   sanctioned: const MoneyPaiseConverter().fromJson(
     (json['sanctionedPaise'] as num).toInt(),
   ),
@@ -92,6 +96,10 @@ Map<String, dynamic> _$ContractToJson(_Contract instance) => <String, dynamic>{
     instance.onboardedOn,
   ),
   'previousRef': instance.previousRef,
+  'onboardedPaymentCount': instance.onboardedPaymentCount,
+  'onboardedTotalPaise': const NullableMoneyPaiseConverter().toJson(
+    instance.onboardedTotal,
+  ),
   'sanctionedPaise': const MoneyPaiseConverter().toJson(instance.sanctioned),
   'upfrontMode': _$UpfrontModeEnumMap[instance.upfrontMode]!,
   'upfrontInput': instance.upfrontInput,

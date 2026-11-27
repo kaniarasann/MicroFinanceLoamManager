@@ -310,6 +310,92 @@ final class ContractTransactionsFamily extends $Family
   String toString() => r'contractTransactionsProvider';
 }
 
+/// Whether one contract's transactions are server-confirmed on this
+/// device (not from cache, no pending writes). False until known.
+
+@ProviderFor(contractTransactionsConfirmed)
+final contractTransactionsConfirmedProvider =
+    ContractTransactionsConfirmedFamily._();
+
+/// Whether one contract's transactions are server-confirmed on this
+/// device (not from cache, no pending writes). False until known.
+
+final class ContractTransactionsConfirmedProvider
+    extends $FunctionalProvider<AsyncValue<bool>, bool, Stream<bool>>
+    with $FutureModifier<bool>, $StreamProvider<bool> {
+  /// Whether one contract's transactions are server-confirmed on this
+  /// device (not from cache, no pending writes). False until known.
+  ContractTransactionsConfirmedProvider._({
+    required ContractTransactionsConfirmedFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'contractTransactionsConfirmedProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$contractTransactionsConfirmedHash();
+
+  @override
+  String toString() {
+    return r'contractTransactionsConfirmedProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $StreamProviderElement<bool> $createElement($ProviderPointer pointer) =>
+      $StreamProviderElement(pointer);
+
+  @override
+  Stream<bool> create(Ref ref) {
+    final argument = this.argument as String;
+    return contractTransactionsConfirmed(ref, argument);
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is ContractTransactionsConfirmedProvider &&
+        other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$contractTransactionsConfirmedHash() =>
+    r'787c37141979b2c259a77c2d1fa7fcffc62e3690';
+
+/// Whether one contract's transactions are server-confirmed on this
+/// device (not from cache, no pending writes). False until known.
+
+final class ContractTransactionsConfirmedFamily extends $Family
+    with $FunctionalFamilyOverride<Stream<bool>, String> {
+  ContractTransactionsConfirmedFamily._()
+    : super(
+        retry: null,
+        name: r'contractTransactionsConfirmedProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  /// Whether one contract's transactions are server-confirmed on this
+  /// device (not from cache, no pending writes). False until known.
+
+  ContractTransactionsConfirmedProvider call(String contractId) =>
+      ContractTransactionsConfirmedProvider._(argument: contractId, from: this);
+
+  @override
+  String toString() => r'contractTransactionsConfirmedProvider';
+}
+
 /// The projected contract (any status) with its docs. Data(null) when the
 /// contract does not exist.
 

@@ -431,10 +431,39 @@ void main() {
       expect(out.last.amount, rs(50));
     });
 
-    test('a row due today is covered on today', () {
+    test('a row due today stays open: the advance is dated on the last '
+        'due date before today (user decision 2026-11-26)', () {
+      // Rows 4, 11, 18 Nov before today; 25 Nov is due today.
       final out = spread(40000, today: d(2026, 11, 25));
-      expect(out.last.paidOn, d(2026, 11, 25));
+      expect(
+        out.any((PastPaymentInput p) => p.paidOn == d(2026, 11, 25)),
+        isFalse,
+      );
       expect(out, hasLength(4));
+      expect(out.last.paidOn, d(2026, 11, 18));
+      expect(out.last.amount, rs(10000));
+    });
+
+    test('a loan disbursed today with an opening total dates it today', () {
+      final out = spread(
+        5000,
+        today: d(2026, 10, 28),
+        disbursedOn: d(2026, 10, 28),
+      );
+      expect(out.single.paidOn, d(2026, 10, 28));
+    });
+
+    test('a first row due on disbursedOn before today is covered and the '
+        'advance lands on that same day', () {
+      final out = spread(
+        150,
+        schedule: <PlannedInstallment>[
+          PlannedInstallment(seq: 1, dueDate: d(2026, 10, 28), amount: rs(100)),
+        ],
+      );
+      expect(out.map((PastPaymentInput p) => p.paidOn).toSet(), <CivilDate>{
+        d(2026, 10, 28),
+      });
     });
 
     test('whole schedule in the past, partly paid', () {

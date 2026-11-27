@@ -281,7 +281,9 @@ service cloud.firestore {
               // onboarding marker; onboarded contracts may start part-paid.
               && ((d.get('origin', 'standard') == 'standard'
                     && d.totalPaidPaise == 0
-                    && d.get('onboardedOn', null) == null)
+                    && d.get('onboardedOn', null) == null
+                    && d.get('onboardedPaymentCount', null) == null
+                    && d.get('onboardedTotalPaise', null) == null)
                   || validOnboarded(d));
         }
 
@@ -301,7 +303,15 @@ service cloud.firestore {
               && d.firstDueDate >= d.disbursedOn
               && civilTs(d.firstDueDate) <= civilTs(d.disbursedOn) + duration.value(366, 'd')
               && (d.get('previousRef', null) == null
-                  || (d.previousRef is string && d.previousRef.size() <= 40));
+                  || (d.previousRef is string && d.previousRef.size() <= 40))
+              // Sprint 7c (M2): what the onboarding wrote, so a partly synced
+              // onboarding can be detected and repaired. Immutable (see update).
+              && nonNeg(d.get('onboardedPaymentCount', null))
+              && d.onboardedPaymentCount <= 1100
+              && nonNeg(d.get('onboardedTotalPaise', null))
+              && d.onboardedTotalPaise < d.sanctionedPaise
+              // Chunk 1 holds a subset of the payments.
+              && d.totalPaidPaise <= d.onboardedTotalPaise;
         }
 
         allow read: if member(cid);
@@ -310,8 +320,10 @@ service cloud.firestore {
 
         allow update: if
           (owner(cid)
-            // origin / onboardedOn / disbursedOn are immutable (Sprint 7b).
-            && !affectedKeys().hasAny(['createdBy', 'createdAt', 'origin', 'onboardedOn', 'disbursedOn'])
+            // origin / onboardedOn / disbursedOn are immutable (Sprint 7b), and
+            // so are the onboarding totals (Sprint 7c).
+            && !affectedKeys().hasAny(['createdBy', 'createdAt', 'origin', 'onboardedOn', 'disbursedOn',
+                                       'onboardedPaymentCount', 'onboardedTotalPaise'])
             && request.resource.data.status in contractStatuses()
             && isInt(request.resource.data.sanctionedPaise)
             && isInt(request.resource.data.upfrontPaise)
@@ -329,6 +341,43 @@ service cloud.firestore {
                 || (resource.data.status in ['active', 'closed']
                     && request.resource.data.status in ['active', 'closed'])));
 
+        allow delete: if false;
+      }
+
+      // ------------------------------------------------- onboarding sync list
+      // Sprint 7c attempt 4. One doc per onboarded contract (id = contract id)
+      // listing the payments written after batch 1. Created only in batch 1,
+      // next to the new onboarded contract; entries are immutable; only the
+      // status moves pending → complete | cancelled. Never deleted.
+      match /onboardingQueues/{contractId} {
+        function queueContractPath() {
+          return /databases/$(database)/documents/companies/$(cid)/contracts/$(contractId);
+        }
+        function validQueue(d) {
+          let c = getAfter(queueContractPath()).data;
+          return d.keys().hasOnly(['contractId', 'status', 'entries', 'count', 'totalPaise',
+                                   'createdBy', 'createdAt', 'updatedAt', 'schemaVersion'])
+              && d.contractId == contractId
+              && d.status == 'pending'
+              && d.entries is list && d.entries.size() > 0 && d.entries.size() <= 1100
+              && d.count == d.entries.size()
+              && nonNeg(d.totalPaise)
+              && d.createdBy == request.auth.uid
+              && c.get('origin', 'standard') == 'onboarded'
+              && d.count <= c.get('onboardedPaymentCount', 0)
+              && d.totalPaise <= c.get('onboardedTotalPaise', 0);
+        }
+
+        allow read: if member(cid);
+        allow create: if owner(cid)
+          // Same batch as the contract create: absent before, present after.
+          && !exists(queueContractPath())
+          && existsAfter(queueContractPath())
+          && validQueue(request.resource.data);
+        allow update: if owner(cid)
+          && onlyChanged(['status', 'updatedAt'])
+          && resource.data.status == 'pending'
+          && request.resource.data.status in ['complete', 'cancelled'];
         allow delete: if false;
       }
 
@@ -350,7 +399,10 @@ service cloud.firestore {
         allow read: if member(cid);
         allow create: if member(cid)
           && validNewInstallment(request.resource.data)
-          && (owner(cid) || request.resource.data.kind == 'rescheduled');
+          && (owner(cid) || request.resource.data.kind == 'rescheduled')
+          // Sprint 7c (R1): no orphan rows. The contract must exist once this
+          // batch applies (same-batch create, or already stored).
+          && existsAfter(/databases/$(database)/documents/companies/$(cid)/contracts/$(request.resource.data.contractId));
         allow update: if member(cid)
           && onlyChanged(['rescheduledOutPaise', 'rescheduledToIds', 'contractActive'])
           && nonNeg(request.resource.data.rescheduledOutPaise)
@@ -396,6 +448,14 @@ service cloud.firestore {
               && d.paidOn >= c.disbursedOn && d.paidOn <= c.onboardedOn
               && notFutureIst(d.paidOn)
               && (d.type == 'disbursement' || d.get('mode', null) in ['upi', 'cash', 'bank'])
+              // Sprint 7c (R2): no single onboarding payment above what was
+              // onboarded (a Σ cap is not expressible in rules).
+              && (d.type != 'payment' || d.amountPaise <= c.get('onboardedTotalPaise', 0))
+              // Sprint 7c attempt 5 (F1): no onboarding payment lands on a
+              // cancelled loan (a resumer racing Cancel). `!= 'cancelled'`,
+              // not `== 'active'`: a repair may close the loan in its batch.
+              // Reversals stay allowed, so a cancel can finish netting.
+              && (d.type != 'payment' || c.status != 'cancelled')
               && d.get('openingBalance', false) is bool;
         }
 

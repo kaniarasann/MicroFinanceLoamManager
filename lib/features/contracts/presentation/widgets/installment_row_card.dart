@@ -41,6 +41,14 @@ class InstallmentRowCard extends StatelessWidget {
       onCollect: onCollect,
       onReschedule: onReschedule,
     );
+    // A cancelled loan collects nothing: every row is neutral (no overdue
+    // colour, icon, "Overdue by" text, Paid tick or actions).
+    if (view.contract.status == ContractStatus.cancelled) {
+      return AppCard(
+        key: ValueKey<String>('cancelled_row_${row.seq}'),
+        child: _CancelledContent(row: row),
+      );
+    }
     if (row.isExtension) return DashedBorderCard(child: content);
     if (row.status == RowStatus.overdue) {
       return DecoratedBox(
@@ -284,4 +292,62 @@ class _Content extends StatelessWidget {
   static String _lower(String s) => '${s[0].toLowerCase()}${s.substring(1)}';
 
   static String _days(int n) => n == 1 ? '1 day' : '$n days';
+}
+
+/// A row of a cancelled loan: title, date, the scheduled amount (muted),
+/// a neutral "Cancelled" pill and "Not collected · loan cancelled".
+class _CancelledContent extends StatelessWidget {
+  const _CancelledContent({required this.row});
+
+  final ProjectedRow row;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    mainAxisSize: MainAxisSize.min,
+    children: <Widget>[
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Icon(
+            Icons.block,
+            size: AppSizes.iconMd,
+            color: AppColors.textTertiary,
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'Installment ${row.seq}',
+                  style: AppTextStyles.titleMdTabular,
+                ),
+                Text(
+                  formatCivilDateWithWeekday(row.dueDate),
+                  style: AppTextStyles.bodySmTabular,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          MoneyText(row.scheduledAmount, color: AppColors.textSecondary),
+        ],
+      ),
+      const SizedBox(height: AppSpacing.sm),
+      const Wrap(
+        spacing: AppSpacing.sm,
+        runSpacing: AppSpacing.xs,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: <Widget>[
+          StatusPill(
+            label: 'Cancelled',
+            kind: StatusKind.neutral,
+            icon: Icons.block,
+          ),
+          Text('Not collected · loan cancelled', style: AppTextStyles.bodySm),
+        ],
+      ),
+    ],
+  );
 }

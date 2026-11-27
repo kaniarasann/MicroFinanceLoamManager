@@ -15,6 +15,7 @@ import '../../features/contracts/presentation/screens/contract_detail_screen.dar
 import '../../features/payments/presentation/screens/record_payment_sheet.dart';
 import '../../features/rollover/presentation/screens/rollover_screen.dart';
 import '../../features/contracts/presentation/screens/create_contract_screen.dart';
+import '../../features/contracts/presentation/screens/onboard_contract_screen.dart';
 import '../../features/company/presentation/members_screen.dart';
 import '../../features/dashboard/presentation/screens/home_screen.dart';
 import '../../features/overdue/presentation/screens/overdue_screen.dart';
@@ -55,6 +56,13 @@ abstract final class AppRoutes {
   static String newContract({String? borrowerId}) => borrowerId == null
       ? newContractPath
       : '$newContractPath?borrowerId=${Uri.encodeQueryComponent(borrowerId)}';
+
+  /// Onboard an existing loan (owner only). Declared before
+  /// `/contracts/:id`, like [newContractPath].
+  static const String onboardContractPath = '$contracts/onboard';
+  static String onboardContract({String? borrowerId}) => borrowerId == null
+      ? onboardContractPath
+      : '$onboardContractPath?borrowerId=${Uri.encodeQueryComponent(borrowerId)}';
   static String contract(String id) => '$contracts/${Uri.encodeComponent(id)}';
   static String recordPayment(String id) => '${contract(id)}/pay';
   static String rollover(String id) => '${contract(id)}/rollover';
@@ -245,6 +253,15 @@ GoRouter appRouter(Ref ref) {
             : null,
         builder: (BuildContext context, GoRouterState state) =>
             CreateContractScreen(
+              borrowerId: state.uri.queryParameters['borrowerId'],
+            ),
+      ),
+      GoRoute(
+        path: AppRoutes.onboardContractPath,
+        // Owner only (the rules enforce it too). No redirect: the screen
+        // tells a collector "Only owners can onboard loans." and leaves.
+        builder: (BuildContext context, GoRouterState state) =>
+            OnboardContractScreen(
               borrowerId: state.uri.queryParameters['borrowerId'],
             ),
       ),

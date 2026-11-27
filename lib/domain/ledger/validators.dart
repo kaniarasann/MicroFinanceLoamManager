@@ -37,6 +37,7 @@ abstract final class LedgerFields {
   static const String firstDueDate = 'firstDueDate';
   static const String amount = 'amount';
   static const String newDueDate = 'newDueDate';
+  static const String paidOn = 'paidOn';
 
   // Onboarding an existing loan.
   static const String disbursedOn = 'disbursedOn';

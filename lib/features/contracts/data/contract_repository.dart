@@ -1,8 +1,11 @@
+import 'dart:developer' as developer;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/errors/app_failure.dart';
-import '../../../core/firebase/chunked_batch.dart' show maxOpsPerBatch;
+import '../../../core/firebase/balanced_chunks.dart'
+    show maxLedgerItemsPerBatch, maxOpsPerBatch;
 import '../../../core/firebase/converters.dart';
 import '../../../core/firebase/firestore_paths.dart';
 import '../../../core/firebase/write_outcome.dart';
@@ -144,6 +147,46 @@ final class LedgerWriteResult {
 
   final String id;
   final WriteOutcome outcome;
+}
+
+/// Continue a pending onboarding sync list (owner only).
+final class ResumeOnboardingCommand {
+  const ResumeOnboardingCommand({
+    required this.cid,
+    required this.contractId,
+    required this.actor,
+    required this.role,
+  });
+
+  final String cid;
+  final String contractId;
+  final LedgerActor actor;
+  final Role? role;
+}
+
+/// What one [ContractRepository.resumeOnboarding] run did.
+enum ResumeOutcome {
+  /// Not an owner: collectors never resume.
+  notOwner,
+
+  /// No queue, or it is already complete / cancelled.
+  nothingQueued,
+
+  /// Batch 1 (the contract) is not on the server yet.
+  notReady,
+
+  /// The contract is no longer active (cancelled, closed, rolled over).
+  stopped,
+
+  /// Offline or not acknowledged in time; a later trigger continues.
+  offline,
+
+  /// A batch was denied twice in a row (after one re-read-and-skip retry);
+  /// a later trigger tries again.
+  denied,
+
+  /// Every queued payment landed and the queue is marked complete.
+  complete,
 }
 
 /// Validates the terms of [cmd] (weekday only for weekly, month day only
@@ -321,6 +364,8 @@ class ContractRepository {
     Uuid uuid = const Uuid(),
     this.commitGrace = const Duration(seconds: 2),
     this.batchLimit = maxOpsPerBatch,
+    this.batchMaxItems = maxLedgerItemsPerBatch,
+    this.resumeGrace = const Duration(seconds: 20),
   }) : _db = firestore,
        _refs = TypedRefs(firestore),
        _clock = clock,
@@ -334,6 +379,13 @@ class ContractRepository {
 
   /// Ops per batch for the chunked onboarding write.
   final int batchLimit;
+
+  /// Most onboarding payments per batch (production rule budget; see
+  /// [maxLedgerItemsPerBatch]).
+  final int batchMaxItems;
+
+  /// How long [resumeOnboarding] waits for each batch's server ack.
+  final Duration resumeGrace;
 
   /// Validates the terms, then writes the contract, its N base
   /// installments, the disbursement transaction and the company's
@@ -366,10 +418,14 @@ class ContractRepository {
   /// Owner only: onboards an existing, in-progress loan. Writes the
   /// contract (origin onboarded, original dates), its N base installments,
   /// the disbursement dated on the original `disbursedOn`, the company's
-  /// `nextLoanNo` increment and every past payment (origin onboarding), in
-  /// 1–4 balanced [WriteBatch]es: each batch's `totalPaidPaise` increment
-  /// equals Σ of the payments in that batch. Throws
-  /// [PermissionDeniedFailure] / [ValidationFailure] (first error).
+  /// `nextLoanNo` increment and the first ≤ 100 past payments (origin
+  /// onboarding) in ONE batch; when more payments remain, that batch also
+  /// writes the durable sync list (`onboardingQueues/{contractId}`). The
+  /// rest is written by [resumeOnboarding] once batch 1 is on the server
+  /// (later batches are never fired blindly: production evaluates them
+  /// before batch 1 lands and denies them). The batch-1 `totalPaidPaise`
+  /// increment equals Σ of its payments. Throws [PermissionDeniedFailure]
+  /// / [ValidationFailure] (first error).
   Future<LedgerWriteResult> onboardContract(OnboardContractCommand cmd) {
     if (cmd.role != Role.owner) {
       return Future<LedgerWriteResult>.error(const PermissionDeniedFailure());
@@ -393,12 +449,163 @@ class ContractRepository {
       now: _clock.nowIst().toUtc(),
       uuid: _uuid,
     );
-    final chunks = plan.chunks(_db, cmd.cid, limit: batchLimit);
+    final first = plan.firstBatch(
+      _db,
+      cmd.cid,
+      limit: batchLimit,
+      maxItems: batchMaxItems,
+    );
     return awaitServerAck(
-      chunks.commit(),
+      first.commit(),
       commitGrace,
-      'onboarding',
+      'onboarding batch 1',
     ).then((WriteOutcome o) => LedgerWriteResult(plan.contract.id, o));
+  }
+
+  /// Owner only: writes the queued payments of onboarding [contractId]
+  /// (its sync list), but only once batch 1 is on the server.
+  ///
+  /// 1. Server reads (never the cache) of the queue and the contract: no
+  ///    queue, a finished one, or a contract not on the server yet → stop.
+  /// 2. A server read of the contract's transactions; queued ids that
+  ///    already exist are skipped (idempotent across devices and retries).
+  /// 3. The rest is written in balanced batches of at most
+  ///    [batchMaxItems] payments, **one at a time**, each awaited (up to
+  ///    [resumeGrace]) before the next; every batch increments
+  ///    `totalPaidPaise` by exactly its own payments. Before EACH batch the
+  ///    queue and the contract are re-read from the server; a queue that is
+  ///    no longer pending or a contract that is no longer active (Cancel
+  ///    won the race) stops the run. The rules also deny an onboarding
+  ///    payment on a cancelled contract.
+  /// 4. When all have landed, the queue is marked `complete` (entries stay;
+  ///    the doc is never deleted).
+  ///
+  /// A denied batch is retried once at once ([isRetry]): the retry re-reads
+  /// and skips what already landed; a second denial returns
+  /// [ResumeOutcome.denied].
+  ///
+  /// A cancelled / closed / rolled-over contract stops the resumer. Being
+  /// offline (a failed server read or an un-acked batch) returns
+  /// [ResumeOutcome.offline]; the next trigger continues. If two devices
+  /// race, a batch that re-sends an existing id is denied as a whole (a
+  /// transaction can't be overwritten), so totals stay balanced.
+  Future<ResumeOutcome> resumeOnboarding(
+    ResumeOnboardingCommand cmd, {
+    bool isRetry = false,
+  }) async {
+    if (cmd.role != Role.owner) return ResumeOutcome.notOwner;
+    const server = GetOptions(source: Source.server);
+    final queueRef = _db.doc(
+      FirestorePaths.onboardingQueue(cmd.cid, cmd.contractId),
+    );
+    final contractRef = _refs.contract(cmd.cid, cmd.contractId);
+    final OnboardingQueue queue;
+    final Contract contract;
+    final Set<String> existing;
+    try {
+      final q = await queueRef.get(server);
+      final data = q.data();
+      if (!q.exists || data == null) return ResumeOutcome.nothingQueued;
+      queue = OnboardingQueue.fromFirestore(data);
+      if (!queue.isPending) return ResumeOutcome.nothingQueued;
+      final c = await contractRef.get(server);
+      final cd = c.data();
+      if (!c.exists || cd == null) return ResumeOutcome.notReady;
+      contract = cd;
+      if (!contract.isActive) return ResumeOutcome.stopped;
+      final txs = await _refs
+          .transactions(cmd.cid)
+          .where('contractId', isEqualTo: cmd.contractId)
+          .get(server);
+      existing = <String>{for (final d in txs.docs) d.id};
+    } on FirebaseException catch (e) {
+      developer.log('resume read failed: ${e.code}', name: 'ledger.writes');
+      return ResumeOutcome.offline;
+    }
+
+    final missing = <QueuedPayment>[
+      for (final e in queue.entries)
+        if (!existing.contains(e.id)) e,
+    ];
+    final now = _clock.nowIst().toUtc();
+    final room = batchMaxItems < batchLimit - 1
+        ? batchMaxItems
+        : batchLimit - 1;
+    for (final group in onboardingChunks(missing, maxItems: room)) {
+      // F1 (attempt 5): re-check on the server before EVERY batch, so a
+      // Cancel (queue → cancelled, contract → cancelled) that landed
+      // between batches stops the resumer at once.
+      try {
+        final qs = await queueRef.get(server);
+        final qd = qs.data();
+        if (qd == null || !OnboardingQueue.fromFirestore(qd).isPending) {
+          return ResumeOutcome.stopped;
+        }
+        final cs = await contractRef.get(server);
+        if (cs.data()?.isActive != true) return ResumeOutcome.stopped;
+      } on FirebaseException catch (e) {
+        developer.log(
+          'resume re-check failed: ${e.code}',
+          name: 'ledger.writes',
+        );
+        return ResumeOutcome.offline;
+      }
+      final sum = Money.sum(group.map((QueuedPayment e) => e.amount));
+      final b = _db.batch()
+        ..update(
+          _db.doc(FirestorePaths.contract(cmd.cid, contract.id)),
+          <String, Object?>{
+            'totalPaidPaise': FieldValue.increment(sum.paise),
+            'updatedAt': Timestamp.fromDate(now),
+          },
+        );
+      for (final e in group) {
+        b.set(
+          _refs.transaction(cmd.cid, e.id),
+          onboardingPaymentTx(
+            id: e.id,
+            c: contract,
+            paidOn: e.paidOn,
+            amount: e.amount,
+            mode: e.mode,
+            reference: e.reference,
+            openingBalance: e.openingBalance,
+            actor: cmd.actor,
+            now: now,
+          ),
+        );
+      }
+      final WriteOutcome o;
+      try {
+        o = await awaitServerAck(b.commit(), resumeGrace, 'resume');
+      } on PermissionDeniedFailure {
+        // F5: typically another device landed some of these ids first (or
+        // a Cancel won). Retry once: it re-reads and skips, so it is
+        // bounded; a second denial gives up until the next trigger.
+        if (isRetry) return ResumeOutcome.denied;
+        return resumeOnboarding(cmd, isRetry: true);
+      }
+      // Still queued: it lands in order when back online; stop here so
+      // nothing more is sent before it is confirmed.
+      if (o == WriteOutcome.queued) return ResumeOutcome.offline;
+    }
+    final WriteOutcome done;
+    try {
+      done = await awaitServerAck(
+        queueRef.update(<String, Object?>{
+          'status': OnboardingQueueStatus.complete.name,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }),
+        resumeGrace,
+        'resume complete',
+      );
+    } on PermissionDeniedFailure {
+      // The queue was cancelled meanwhile (only pending may move).
+      return ResumeOutcome.stopped;
+    }
+    return done == WriteOutcome.synced
+        ? ResumeOutcome.complete
+        : ResumeOutcome.offline;
   }
 
   /// Moves `cmd.amount` of the source installment to `cmd.newDueDate`:

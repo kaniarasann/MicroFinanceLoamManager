@@ -40,7 +40,8 @@ const CONTRACT_KEYS = [
   'baseInstallmentCount', 'borrowerId', 'borrowerName', 'borrowerPhoneE164',
   'closedAt', 'createdAt', 'createdBy', 'disbursedOn', 'firstDueDate',
   'frequency', 'guarantor', 'installmentPaise', 'lastPaymentOn', 'loanNo',
-  'netDisbursedPaise', 'notes', 'onboardedOn', 'origin', 'preferredMonthDay',
+  'netDisbursedPaise', 'notes', 'onboardedOn', 'onboardedPaymentCount',
+  'onboardedTotalPaise', 'origin', 'preferredMonthDay',
   'preferredWeekday', 'previousRef', 'purpose', 'rolledOverFromContractId',
   'rolledOverToContractId', 'rolloverSettledPaise', 'sanctionedPaise',
   'schemaVersion', 'status', 'totalPaidPaise', 'totalWaivedPaise',
@@ -83,7 +84,7 @@ const contractDoc = (loan, uid, over = {}) => ({
   createdBy: uid, disbursedOn: loan.disbursedOn, firstDueDate: loan.firstDue,
   frequency: loan.frequency, guarantor: null, installmentPaise: loan.inst,
   lastPaymentOn: null, loanNo: 4, netDisbursedPaise: loan.sanctioned - loan.upfront,
-  notes: null, onboardedOn: T, origin: 'onboarded', preferredMonthDay: null,
+  notes: null, onboardedOn: T, onboardedPaymentCount: 0, onboardedTotalPaise: 0, origin: 'onboarded', preferredMonthDay: null,
   preferredWeekday: loan.weekday, previousRef: 'Book 7 / 12', purpose: null,
   rolledOverFromContractId: null, rolledOverToContractId: null,
   rolloverSettledPaise: null, sanctionedPaise: loan.sanctioned, schemaVersion: 1,
@@ -120,19 +121,30 @@ const dailyItemised = (n, amountPaise) => Array.from({ length: n }, (_, i) => ({
   mode: ['upi', 'cash', 'bank'][i % 3], openingBalance: false, note: null,
 })).sort((a, b) => a.paidOn.localeCompare(b.paidOn));
 
-// balancedChunkSizes: first batch room = 450 − (N inst + disb + company) − 1.
-const chunkSizes = (items, nInst) => {
-  const first = Math.min(items, 450 - (nInst + 2) - 1);
+// `OnboardingPlan.layout` (Sprint 7c attempt 4, sync list): batch 1 holds
+// contract + disbursement + nextLoanNo + every installment + (when more
+// payments remain) the queue doc + up to 100 payments; the rest go in
+// later batches of ≤ 100, written by the resumer one at a time.
+const MAX_ITEMS = 100;
+const chunkSizes = (items, nInst, limit = 450) => {
+  const fixed = 3 + nInst;
+  const fits = (room) => Math.max(0, Math.min(items, room, MAX_ITEMS));
+  let first = fits(limit - fixed);
+  if (first < items) first = fits(limit - fixed - 1);
   const out = [first];
   let left = items - first;
-  while (left > 0) { const k = Math.min(left, 449); out.push(k); left -= k; }
+  while (left > 0) { const k = Math.min(left, limit - 1, MAX_ITEMS); out.push(k); left -= k; }
   return out;
 };
 
-/** Builds the batches of `OnboardingPlan.chunks` for [loan] as [uid]. */
-const onboardBatches = (loan, uid, pays, { contractOver = {}, f = as(uid) } = {}) => {
-  const sizes = chunkSizes(pays.length, loan.n);
+/**
+ * Builds the writes of an onboarding for [loan] as [uid]: batch 1 (with
+ * the queue doc when payments remain) and the resumer's later batches.
+ */
+const onboardBatches = (loan, uid, pays, { contractOver = {}, f = as(uid), limit = 450 } = {}) => {
+  const sizes = chunkSizes(pays.length, loan.n, limit);
   const last = pays.length ? pays[pays.length - 1].paidOn : null;
+  const total = pays.reduce((s, x) => s + x.amountPaise, 0);
   const batches = [];
   let at = 0;
   sizes.forEach((size, c) => {
@@ -141,15 +153,34 @@ const onboardBatches = (loan, uid, pays, { contractOver = {}, f = as(uid) } = {}
     const sum = chunk.reduce((s, x) => s + x.amountPaise, 0);
     const cref = doc(f, p('contracts', loan.id));
     if (c === 0) {
-      b.set(cref, { ...contractDoc(loan, uid, { lastPaymentOn: last, ...contractOver }), totalPaidPaise: increment(sum) });
-      for (let seq = 1; seq <= loan.n; seq++) {
-        b.set(doc(f, p('installments', `${loan.id}-i${seq}`)), installmentDoc(loan, seq, uid));
-      }
+      b.set(cref, {
+        ...contractDoc(loan, uid, {
+          lastPaymentOn: last, onboardedPaymentCount: pays.length, onboardedTotalPaise: total,
+          ...contractOver,
+        }),
+        totalPaidPaise: increment(sum),
+      });
       b.set(doc(f, p('transactions', `${loan.id}-d`)), txDoc(loan.id, uid, {
         type: 'disbursement', amountPaise: loan.sanctioned - loan.upfront,
         paidOn: loan.disbursedOn, mode: null,
       }));
       b.update(doc(f, `companies/${CID}`), { nextLoanNo: increment(1) });
+      for (let seq = 1; seq <= loan.n; seq++) {
+        b.set(doc(f, p('installments', `${loan.id}-i${seq}`)), installmentDoc(loan, seq, uid));
+      }
+      const rest = pays.slice(size);
+      if (rest.length) {
+        b.set(doc(f, p('onboardingQueues', loan.id)), {
+          contractId: loan.id, status: 'pending',
+          entries: rest.map((x, k) => ({
+            i: `${loan.id}-p${size + k}`, d: x.paidOn, a: x.amountPaise, m: x.mode,
+            o: x.openingBalance ?? false,
+          })),
+          count: rest.length, totalPaise: rest.reduce((s, x) => s + x.amountPaise, 0),
+          createdBy: uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+          schemaVersion: 1,
+        });
+      }
     } else {
       b.update(cref, { totalPaidPaise: increment(sum), updatedAt: Timestamp.now() });
     }
@@ -161,8 +192,11 @@ const onboardBatches = (loan, uid, pays, { contractOver = {}, f = as(uid) } = {}
   });
   return batches;
 };
-// Committed together, in order (like BalancedChunks.commit).
-const commitAll = (batches) => Promise.all(batches.map((b) => b.commit()));
+// Batch 1, then the resumer's batches one at a time (each awaited), as
+// `onboardContract` + `resumeOnboarding` do.
+const commitAll = async (batches) => {
+  for (const b of batches) await b.commit();
+};
 const onboard = (loan, uid, pays, opts) => commitAll(onboardBatches(loan, uid, pays, opts));
 
 const readAs = async (path) => {
@@ -214,10 +248,11 @@ describe('Tester 7b: payload mirror', () => {
     expect(Object.keys(installmentDoc(WEEKLY, 1, 'ravi')).sort()).toEqual(INSTALLMENT_KEYS);
     expect(Object.keys(txDoc(WEEKLY.id, 'ravi')).sort()).toEqual(TX_KEYS);
   });
-  it('chunk plan matches the Dart planner: 6 → [6]; 300 → [81, 219]; 1100 → [81, 449, 449, 121]', () => {
+  it('chunk plan matches the Dart planner (7c attempt 4: batch 1 + queue doc, then ≤ 100 per resumed batch): 300 → [80, 100, 100, 20]; 1100 → 12 batches', () => {
     expect(chunkSizes(6, 10)).toEqual([6]);
-    expect(chunkSizes(300, 366)).toEqual([81, 219]);
-    expect(chunkSizes(1100, 366)).toEqual([81, 449, 449, 121]);
+    expect(chunkSizes(300, 366)).toEqual([80, 100, 100, 20]);
+    expect(chunkSizes(1100, 366)).toEqual([80, ...Array(10).fill(100), 20]);
+    expect(chunkSizes(328, 334)).toEqual([100, 100, 100, 28]);
   });
 });
 
@@ -229,11 +264,11 @@ describe('Tester 7b: replay of the Dart onboarding batches', () => {
     expect(c.lastPaymentOn).toBe(dueOn(WEEKLY, 6));
     expect((await readAs(`companies/${CID}`)).nextLoanNo).toBe(5);
   });
-  it('daily 300 itemised (2 batches: 450 + 220 ops) by owner: allowed; Σ == totalPaid', async () => {
+  it('daily 300 itemised (batch 1 of 450 ops incl. the queue, then 101 + 101 + 21) by owner: allowed; Σ == totalPaid', async () => {
     await assertSucceeds(onboard(DAILY, 'ravi', dailyItemised(300, 10000)));
     expect((await readAs(p('contracts', DAILY.id))).totalPaidPaise).toBe(3000000);
   });
-  it('daily 1,100 itemised (4 batches) by owner: allowed; Σ == totalPaid', async () => {
+  it('daily 1,100 itemised (12 batches) by owner: allowed; Σ == totalPaid', async () => {
     await assertSucceeds(onboard(DAILY, 'ravi', dailyItemised(1100, 1000)));
     expect((await readAs(p('contracts', DAILY.id))).totalPaidPaise).toBe(1100000);
   });
@@ -364,7 +399,10 @@ describe('Tester 7b: after onboarding', () => {
 
 describe('Tester 7b: standard contracts', () => {
   const STD = { ...WEEKLY, id: 'a7b00000-0000-4000-8000-0000000000s1', disbursedOn: T, firstDue: D(7) };
-  const std = (over = {}) => contractDoc(STD, 'ravi', { origin: 'standard', onboardedOn: null, previousRef: null, ...over });
+  const std = (over = {}) => contractDoc(STD, 'ravi', {
+    origin: 'standard', onboardedOn: null, previousRef: null,
+    onboardedPaymentCount: null, onboardedTotalPaise: null, ...over,
+  });
   it('standard contract with totalPaid 0: allowed (control)', async () => {
     await assertSucceeds(setDoc(doc(as('ravi'), p('contracts', STD.id)), std()));
   });

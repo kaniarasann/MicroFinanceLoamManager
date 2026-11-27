@@ -221,6 +221,11 @@ abstract final class AppSizes {
 
   /// KPI / summary tiles and alert icon badge.
   static const double alertBadge = 40;
+
+  /// Onboarding: max height of the scrollable itemised-payments list and
+  /// of the "As of today" timeline (both lazily built, up to 1,100 / 366+
+  /// rows).
+  static const double boundedListMaxHeight = 420;
 }
 
 /// Corner radii.

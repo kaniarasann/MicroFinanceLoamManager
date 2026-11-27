@@ -53,7 +53,8 @@ class LedgerEntryTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Text(
-                  '${typeLabel(tx.type)} · ${loanLabel(tx.loanNo)}',
+                  '${onboardingPaymentLabel(tx) ?? typeLabel(tx.type)} · '
+                  '${loanLabel(tx.loanNo)}',
                   style: AppTextStyles.titleMdTabular,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,

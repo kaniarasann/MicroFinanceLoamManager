@@ -32,6 +32,8 @@ class ActiveContractCard extends StatelessWidget {
     final c = p.contract;
     final next = p.nextDue;
     final pct = p.clearedBps ~/ 100;
+    final onboarded = onboardedLabel(c);
+    final ref = c.isOnboarded ? c.previousRef : null;
     return AppCard(
       key: ValueKey<String>('contract_card_${c.id}'),
       onTap: onOpen,
@@ -54,8 +56,17 @@ class ActiveContractCard extends StatelessWidget {
                 standing: contractStanding(p),
                 daysOverdue: p.maxDaysOverdue,
               ),
+              if (onboarded != null)
+                StatusPill(
+                  key: ValueKey<String>('onboarded_${c.id}'),
+                  label: onboarded,
+                  kind: StatusKind.info,
+                  icon: Icons.history,
+                ),
             ],
           ),
+          if (ref != null && ref.isNotEmpty)
+            Text('Ref $ref', style: AppTextStyles.bodySmTabular),
           const SizedBox(height: AppSpacing.xs),
           Text(
             'Disbursed ${formatCivilDate(c.disbursedOn)}',

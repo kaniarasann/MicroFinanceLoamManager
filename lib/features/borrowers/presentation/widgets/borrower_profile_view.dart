@@ -472,6 +472,17 @@ class _Actions extends ConsumerWidget {
             icon: const Icon(Icons.add),
             label: const Text('New loan'),
           ),
+        if (isOwner)
+          OutlinedButton.icon(
+            key: const ValueKey<String>('borrower_existing_loan'),
+            onPressed: () => unawaited(
+              context.push<void>(
+                AppRoutes.onboardContract(borrowerId: borrower.id),
+              ),
+            ),
+            icon: const Icon(Icons.history),
+            label: const Text('Existing loan'),
+          ),
       ],
     );
   }

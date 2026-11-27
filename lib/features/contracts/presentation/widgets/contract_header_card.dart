@@ -33,6 +33,8 @@ class ContractHeaderCard extends StatelessWidget {
     final (label, kind) = statusOf(c.status);
     final cleared = Money.min(p.totalPaid, c.sanctioned);
     final purpose = c.purpose;
+    final onboarded = onboardedLabel(c);
+    final ref = c.previousRef;
     return AppCard(
       padding: AppCardPadding.spacious,
       child: Column(
@@ -68,6 +70,30 @@ class ContractHeaderCard extends StatelessWidget {
               ),
             ],
           ),
+          if (onboarded != null) ...<Widget>[
+            const SizedBox(height: AppSpacing.sm),
+            Wrap(
+              spacing: AppSpacing.sm,
+              runSpacing: AppSpacing.xs,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: <Widget>[
+                StatusPill(
+                  key: const ValueKey<String>('onboarded_pill'),
+                  label: onboarded,
+                  kind: StatusKind.info,
+                  icon: Icons.history,
+                ),
+                if (ref != null && ref.isNotEmpty)
+                  Text(
+                    'Ref $ref',
+                    key: const ValueKey<String>('previous_ref'),
+                    style: AppTextStyles.bodyMdTabular.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+              ],
+            ),
+          ],
           const SizedBox(height: AppSpacing.lg),
           Row(
             children: <Widget>[
