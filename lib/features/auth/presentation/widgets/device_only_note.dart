@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../../../core/routing/app_router.dart';
 import '../../../../core/theme/app_theme.dart';
 
 /// "Your MPIN stays on this device", optionally followed by Privacy / Terms
@@ -12,9 +16,9 @@ class DeviceOnlyNote extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const muted = AppTextStyles.bodySm;
-    // TODO(sprint-8): open the Privacy Policy and Terms pages.
-    Widget link(String label) => TextButton(
-      onPressed: () {},
+    Widget link(String label, String route) => TextButton(
+      key: ValueKey<String>('legal_link_$label'),
+      onPressed: () => unawaited(context.push<void>(route)),
       style: TextButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
         textStyle: AppTextStyles.labelMd,
@@ -34,9 +38,9 @@ class DeviceOnlyNote extends StatelessWidget {
         const Text('Your MPIN stays on this device', style: muted),
         if (showLinks) ...<Widget>[
           const Text(' · ', style: muted),
-          link('Privacy'),
+          link('Privacy', AppRoutes.privacy),
           const Text('·', style: muted),
-          link('Terms'),
+          link('Terms', AppRoutes.terms),
         ],
       ],
     );

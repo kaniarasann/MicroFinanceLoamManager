@@ -59,7 +59,7 @@ final class SessionControllerProvider
   }
 }
 
-String _$sessionControllerHash() => r'51046a96b53420dab9fdefbb31a77b2be01de0e9';
+String _$sessionControllerHash() => r'1903b9ed486d56fd900b6736ad4f6befee3e9d7d';
 
 /// Owns [AuthStage]:
 /// - auth stream null → signedOut;

@@ -61,6 +61,10 @@ abstract interface class AuthRepository {
 
   /// Signs out of Firebase and Google.
   Future<void> signOut();
+
+  /// Deletes the Firebase Auth user (call right after
+  /// [reauthenticateWithGoogle]), then signs out of Google.
+  Future<void> deleteAccount();
 }
 
 /// Result of a Google authentication: the ID token for Firebase.
@@ -205,6 +209,22 @@ final class FirebaseAuthRepository implements AuthRepository {
       await _auth.signOut();
     } on Object catch (e, st) {
       throw mapFirebaseException(e, st);
+    }
+  }
+
+  @override
+  Future<void> deleteAccount() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) throw const PermissionDeniedFailure();
+      await user.delete();
+    } on Object catch (e, st) {
+      throw _mapAuthError(e, st);
+    }
+    try {
+      await _google.signOut();
+    } on Object catch (e) {
+      developer.log('Google sign-out failed', name: 'auth', error: e);
     }
   }
 

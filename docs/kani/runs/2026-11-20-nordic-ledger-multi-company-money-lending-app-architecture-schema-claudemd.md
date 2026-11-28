@@ -1099,7 +1099,7 @@ function onboardingTx(d) {
 | 7 | 13 Dashboard · 14 Calendar & Overdue tracker | `kani-orchestrator:role-ui-team` | 6 | passed | The dashboard shows the 4 KPIs, the collections chart and the receivable breakdown matching the recorded data. The calendar dots and day lists are correct, and the overdue tracker filters and Call/WhatsApp/Record actions work. |
 | 7b | 18 Onboarding domain (models, validators, opening-total spread) · 19 Onboarding rules + rules tests · 20 Onboarding write path (balanced chunks, reversal dating, opening-balance reversal) — added 2026-11-24 | `kani-orchestrator:role-ui-team`, `kani-orchestrator:role-database-admin` | 7 | passed | Verifiable through the automated suites alone (like Sprint 2). The domain tests show a backdated loan's validation windows and the opening-total spread, and a projection with correct paid, partial, overdue and extension rows. The emulator rules tests show an owner's onboarding batches (1 and 2 chunks, 450 ops) are allowed and collector, other-company and out-of-window writes are denied. The `fake_cloud_firestore` tests show Σ payments == Σ increments == totalPaid across 1–4 batches. |
 | 7c | 21 Onboard existing loan screen, entry points, preview, labels · 22 Regression on onboarded loans — added 2026-11-24 | `kani-orchestrator:role-ui-team` | 7b | passed | On a device, as owner, onboard a weekly loan disbursed 3 months ago with an opening total, and a daily loan with itemised past payments, both while offline. The "As of today" preview matches the saved contract. Unpaid past installments show overdue with days late and auto-extend. The past cash appears on its own dates in Total collected, the chart and the calendar, without changing Received today. A collector cannot see or open onboarding. Reversing an onboarding payment corrects its original date. |
-| 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7, 7c | pending | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
+| 8 | 15 Settings & notifications · 16 Responsive pass | `kani-orchestrator:role-ui-team` | 7, 7c | passed | Settings works end to end (notification prefs, MPIN change, sign out, delete account). Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths. |
 | 9 | 17 Release & Play readiness | `kani-orchestrator:role-ui-team` | 8 | pending | A signed release `.aab` builds with the launcher icon and splash, Google sign-in works in the release build, and the Play publishing checklist is ready for internal-testing upload. |
 
 **Total sprints:** 9 (originally) + 7b and 7c (added 2026-11-24) = 11
@@ -3252,6 +3252,308 @@ Final totals:
 - `flutter analyze`: clean;
 - `flutter test`: 1184/1184;
 - `npm test`: 572/572.
+
+### Sprint 8
+**Sprint Goal:** Settings works end to end: notification prefs, MPIN change, sign out and delete account. Digest, overdue and per-installment local notifications fire and deep-link correctly. Every screen adapts correctly on phone and tablet widths.
+
+**kani-orchestrator:role-ui-team — Task 15 Settings & notifications:**
+
+Files created/modified:
+- `lib/domain/ledger/notification_plan.dart` (exported from `ledger.dart`):
+  - `planCollectionNotifications(prefs, today, nowMinuteOfDay, rows, overdue, companyName)`, a pure function;
+  - `DigestTime` (`'HH:mm'` parse with an 08:00 fallback, `display` "8:00 AM");
+  - `PlannedNotification` (value-equal) and `NotificationKind` {digest, installment, overdue};
+  - `notificationWindowDays = 14`, `maxInstallmentReminders = 300`.
+- `lib/features/notifications/data/local_notification_gateway.dart`:
+  - the `LocalNotificationGateway` seam;
+  - `FlutterLocalNotificationGateway`: IST `TZDateTime`, `AndroidScheduleMode.inexactAllowWhileIdle`, one channel per kind, `ic_stat_ledger` icon;
+    - `replaceAll` cancels **pending** alarms only, so a delivered digest stays in the tray;
+    - `cancelAll` also clears delivered ones and is used on sign-out and deletion;
+  - `InMemoryNotificationGateway` for tests.
+- `lib/features/notifications/application/notification_providers.dart`:
+  - `CollectionNotificationScheduler`: the debounced (2 s) re-planner, which skips an unchanged plan;
+  - `PendingDeepLink` / `readyDeepLink`: a deep link is held until the app is unlocked with a company ready and no auto-lock check is in flight;
+  - `notificationBootstrap` (plugin init, tap callback and the cold-start launch payload);
+  - `NotificationPermission` (the Android 13 prompt, once per install, plus re-request), `notificationsAllowed`, `notificationPrefs`, `notificationPayload`.
+- `lib/features/settings/`:
+  - `data/account_repository.dart`: server-only reads plus the single deletion WriteBatch;
+  - `data/sync_signals.dart`: connectivity_plus + `snapshotsInSync` + `waitForPendingWrites`, with a fake;
+  - `application/account_exit.dart`: the pure `decideExit` / `AccountExitPlan`;
+  - `application/settings_providers.dart`: `SettingsActions` (prefs, auto-lock, sign-out, deleteAccount), `SyncStatus`, `accountExitPlan`, `appVersion`, `autoLockMinutes`, `biometricAvailable`.
+- `lib/features/settings/presentation/screens/`:
+  - `settings_screen.dart`: one column on compact, two columns on expanded;
+  - `change_mpin_screen.dart`;
+  - `delete_account_screen.dart`;
+  - `legal_screen.dart`: in-app Privacy policy and Terms, which work offline and before sign-in.
+- `lib/features/settings/presentation/widgets/`:
+  - `settings_group.dart`, `settings_tile.dart`, `settings_switch_tile.dart`;
+  - `profile_card.dart`, `sync_status_card.dart`;
+  - `company_settings_group.dart`, `notification_settings_group.dart`, `security_settings_group.dart`, `about_settings_group.dart`, `account_settings_group.dart`.
+- `lib/features/auth/application/session_controller.dart`:
+  - `verifyCurrentMpin`, which counts towards the same 5-try lockout;
+  - `changeMpin`;
+  - `setBiometricEnabled`, which runs a real prompt before enabling;
+  - `completeAccountDeletion`, plus `kAccountDeletedMessage` / `kAccountDeletionIncompleteMessage`.
+- `lib/features/auth/application/lock_controller.dart`: the background timestamp is cleared only after the resume decision, so `state == null` also means "no lock check in flight" (the deep link waits for it).
+- `lib/features/auth/data/auth_repository.dart`: `deleteAccount()`, which deletes the Firebase Auth user and then signs out of Google.
+- `lib/features/auth/presentation/widgets/device_only_note.dart`: the Privacy / Terms links now open the pages (the Sprint 3 TODO).
+- `lib/features/company/application/company_providers.dart`: `AccountDeletionInProgress`. While it is set, the removed-member guard skips its lost-access side effects, which would otherwise re-create `user_settings`.
+- `lib/features/onboarding/data/user_settings_repository.dart`: `setNotificationPrefs` (merge patch of the whole `notifications` map, offline-safe).
+- `lib/core/routing/app_router.dart`:
+  - `AppRoutes.homeTab` / `dueToday` (`/home?tab=today`) / `settings` / `changeMpin` / `deleteAccount` / `privacy` / `terms`;
+  - `isNotificationTarget` (an allow-list: Due Today, `/overdue`, `/contracts/{id}/pay`);
+  - `/legal/*` is reachable in every auth stage;
+  - Home reads `?tab=`.
+- `lib/app.dart`: watches the bootstrap and the scheduler. It opens a ready deep link with `go(/home)` + `push(link)`, so Back returns to the dashboard.
+- `lib/features/dashboard/presentation/screens/home_screen.dart`:
+  - the Settings tab is live;
+  - `initialTab` / `didUpdateWidget` handle a repeat deep link;
+  - the temporary header kebab menu was removed.
+- `lib/features/dashboard/presentation/screens/dashboard_screen.dart`: `focusDueToday` scrolls the Due Today list into view. The body is now a `SingleChildScrollView` + `Column`, so the anchor is always laid out.
+- `android/app/src/main/AndroidManifest.xml`:
+  - `POST_NOTIFICATIONS` and `RECEIVE_BOOT_COMPLETED`;
+  - the plugin's `ScheduledNotificationReceiver` and `ScheduledNotificationBootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED, QUICKBOOT);
+  - **no** SCHEDULE_EXACT_ALARM / USE_EXACT_ALARM.
+- `android/app/src/main/res/drawable/ic_stat_ledger.xml`: a white vector status-bar glyph. `res/raw/keep.xml` keeps it under resource shrinking. Gradle was unchanged: core-library desugaring was already on.
+- `firebase/firestore.rules`: the **close company** branch (see below).
+- Tests: 96 new Flutter tests (suite 1184 → 1280) and 18 new rules tests (572 → 590):
+  - `test/domain/ledger/notification_plan_test.dart` (16): 100% of the new lines (90/90);
+  - `test/features/notifications/notification_scheduler_test.dart` (9) and `deep_link_test.dart` (7);
+  - `test/features/settings/settings_screen_test.dart` (14), `change_mpin_test.dart` (6) and `delete_account_test.dart` (11);
+  - `firebase/test/sprint8_account.test.js` (18).
+  - Updated: `test/features/auth/auth_fakes.dart` (fake `deleteAccount`; `AuthHarness` overrides the notification gateway, a zero debounce and fake sync signals) and `test/features/company/company_switcher_test.dart` (Members is now reached through Settings).
+
+Key decisions:
+- **One pure plan, re-run on every input.** The scheduler listens to:
+  - `portfolioProvider`, so every ledger change re-plans: contract created or onboarded, payment recorded or reversed, reschedule, rollover, waiver, cancel, and any sync from another device (all arrive as snapshot changes);
+  - the active company (switch), the uid, `user_settings.notifications`, the auth stage, the IST day and the deletion flag;
+  - app start (its first build).
+
+  Each run cancels pending alarms and schedules at most 14 days ahead. An unchanged plan is not re-sent.
+- **Plan rules:**
+  - Digest: open rows due that day (count + Σ remaining). Body: "5 collections due today · ₹42,500". Opens `/home?tab=today` (Dashboard scrolled to Due Today).
+  - Per-installment reminder (off by default): "Suresh Verma · Loan #04 · ₹3,500 due today". Opens `/contracts/{id}/pay` (the Record Payment sheet over the contract).
+  - Overdue nudge: today's overdue rows aged by one day per day, plus rows that will have fallen due by then, assuming no further payments; a payment re-plans. Body: "3 overdue · ₹25,500 · highest 5 days". Opens `/overdue`.
+  - All three fire at the digest time, as the requirement says. Today's slot is skipped once that time has passed.
+  - Fully paid rows, auto-extension rows (they re-plan money that is already in the overdue nudge), history rows and rows outside the window never notify.
+  - Per-installment reminders are capped at 300 per plan, under Android's 500-alarm limit; the digest still covers the rest.
+- **Roles.** Requirements: collectors see all dues of their company and may record payments. Both roles therefore get the same three kinds, and the Record Payment deep link is valid for both. Notifications are only ever for the **active** company (the title is the company name). They are cancelled on sign-out, account deletion, or when there is no company.
+- **Deep links respect the MPIN lock.** A tap (warm) or the launch payload (killed app) goes into `PendingDeepLink`, which takes allow-listed routes only. It opens once the app is unlocked, the company gate is ready and no auto-lock decision is pending, so a tap that wakes a locked app opens after the MPIN.
+- **Permission.** The Android 13 prompt is shown once per install, at first use (the first unlocked session with a company; a secure-storage flag). A denial is respected and the app keeps working. Settings shows "Notifications are off · Allow" when they are blocked, and turning a kind on re-requests.
+- **Copy.** Every notification setting says "on this phone". The footnote says borrowers are never messaged automatically. There is no "Local SQLite encrypted" line; the sync card says "Works offline · syncs automatically".
+- **Settings sources of truth.**
+  - Notification prefs are in `user_settings` (per user, synced).
+  - Auto-lock and biometric stay **device-local** in secure storage, like the MPIN. `UserSettings.autoLockMinutes` stays unused (this settles the Sprint 3 note).
+  - Auto-lock choices are Immediately / 1 / 5 / 15 min.
+- **Change MPIN:** current → new → confirm.
+  - A wrong current MPIN uses the same 5-try counter; the 5th signs out with the lockout notice.
+  - A new MPIN equal to the old one is refused.
+  - A fresh salt is used and the biometric opt-in is kept.
+- **Delete account (Play policy), online only.** The steps:
+  1. Google re-auth, so `user.delete()` has a recent login. Cancelling deletes nothing.
+  2. A fresh `Source.server` read of every membership: the company's `ownerUids`, and for a sole owner the member count and pending invites.
+  3. **One** WriteBatch, awaited until the server acks it (20 s, otherwise "needs a connection"). There is a single batch on purpose: the Sprint 7c batch-ordering lesson.
+     - leave: delete the member doc and the membership index doc;
+     - one of several owners: also `arrayRemove` from `ownerUids` (the Sprint 3 review note);
+     - **sole owner and only member: close the company** (`ownerUids: []`, `closedAt`, `closedBy`, pending invites revoked);
+     - stale index doc: delete it;
+     - then `user_settings/{uid}` and `users/{uid}`.
+  4. Cancel notifications, wipe this device's MPIN, schedule the Firestore cache clear, then delete the Auth user. The app ends on sign-in with "Your account was deleted…".
+
+  A **sole owner with other members is blocked**: make one of them an owner, or remove them, in Members & invites first. That is the requirement's "transfer ownership".
+
+  Ledger records are never touched. Transactions and contracts keep `recordedBy` (uid) and `recordedByName`, and a closed company's records stay in Firestore. There are no hard deletes of financial records.
+- **Rules change (Task 15), REDEPLOY REQUIRED.**
+  - `companies/{cid}` update gains a close branch. The caller must be the sole owner (`ownersBefore == [uid]`), may change only `ownerUids → []`, `closedAt == request.time` and `closedBy == uid`, and must delete their own member doc in the same batch (`!existsAfter`).
+  - `members/{uid}` delete gains the matching sole-owner branch: self, `ownersAfter` empty and `closedBy == uid` after the batch.
+  - Everything else is unchanged.
+- **Sync card.** It shows "All changes synced" (sage), "Changes waiting to sync" (amber, while `waitForPendingWrites` is pending) or "Offline · changes will sync" (amber, from connectivity). Each state has an icon and a label, and "Last synced at" shows after a flush this session.
+
+Known limitations:
+- The rules cannot count members. "Sole owner with other members → blocked" is enforced by the client (fresh server read); the rules alone would let such an owner close the company. The other members would keep read and collect access to an owner-less company that nobody can manage again. The rules test documents this.
+- Future-day nudges and digests assume no further payments. They are corrected the next time the app runs or syncs, but a payment recorded on another device while this phone's app is never opened does not reach it.
+- If Firebase Auth refuses `user.delete()` after the data batch has landed (very unlikely right after a re-auth), the app signs out with "Contact support to finish".
+- A blocked sole owner's company must be the **active** company for "Open Members & invites" to manage it (the screen says which company).
+- `Source.server` reads are not exercised by fake_cloud_firestore (it ignores `GetOptions`).
+
+**kani-orchestrator:role-ui-team — Task 16 Responsive pass:**
+
+Files created/modified:
+- `test/responsive/sprint8_responsive_test.dart` (33) goes through the real `HomeScreen` / router over the aggregates fixture (an overdue loan, a due-today row, a rolled-over loan), at 400, 1024 and 360 with 1.3× text:
+  - shell tabs Dashboard, Calendar, Borrowers and Settings, asserting NavigationBar on compact and a labelled NavigationRail on expanded;
+  - the Due Today deep link (asserts the dashboard scrolled);
+  - collector Settings;
+  - Overdue tracker, contract detail (overdue and rolled-over), Onboard an existing loan, and the Privacy page.
+
+  Every scrollable is scrolled to its end, and any layout exception or overflow fails the test.
+- Settings, Change MPIN and Delete account each have their own 400 / 1024 / 360@1.3× cases (above).
+
+Key decisions:
+- Earlier sprints already covered the screens at 360 / 400 / 1024 (Dashboard, Calendar, Borrowers 360/1200, Overdue, contract detail, onboarding at 360@1.3× and 1024). The new matrix adds a uniform pass through the real shell and navigation chrome.
+- **No overflow was found**, so no layout fixes were needed. The only layout change is the Dashboard's switch from `ListView` to `SingleChildScrollView` + `Column` (for the deep-link anchor), which the existing dashboard tests and the matrix both cover.
+- Settings uses `WindowSize.of` (breakpoint API), not MediaQuery maths. All rows are ≥ 56dp and the switch / chevron / time-chip targets are ≥ 48dp. Text wraps instead of truncating at 1.3×.
+
+Known limitations:
+- The widget tests cover layout at the three sizes, not real-device font or DPI quirks; see the device checks below.
+
+**Verification:**
+- `dart run build_runner build --delete-conflicting-outputs`: OK.
+- `flutter analyze`: **clean**.
+- `flutter test`: **1280/1280** (baseline 1184 + 96).
+- `cd firebase && npm test` (run on its own, after the Flutter tests): **590/590** (baseline 572 + 18).
+- `flutter build apk --debug --target-platform android-x64`: built.
+- Nothing was committed, deployed or installed.
+- **REDEPLOY REQUIRED:** `firebase deploy --only firestore:rules` (the Sprint 8 close-company branches). Until it is deployed, deleting the account of a **sole owner who is the only member** fails with "You don't have permission"; every other deletion case works on the current rules.
+
+**Needs human verification on device:**
+1. **Permission prompt (Android 13+).** After the first unlock with a company, the POST_NOTIFICATIONS dialog appears once. Deny it: the app keeps working, and Settings shows "Notifications are off · Allow". Allow it from there.
+2. **Firing and timing.** Set the digest time 2–3 minutes ahead in Settings and leave the app. Then check:
+   - the digest arrives (inexact: Android may delay it by several minutes, more in Doze);
+   - with per-installment on, one reminder per open row;
+   - with an overdue loan, the nudge.
+
+   Check the text, the ₹ format and the company name. Record a payment and confirm that row's reminder is gone from the next plan.
+3. **Deep links from a killed app.** Force-stop the app, tap a notification, unlock with the MPIN, and confirm it lands correctly:
+   - digest → Dashboard scrolled to Due Today;
+   - nudge → Overdue tracker;
+   - reminder → Record Payment for that loan.
+
+   Back returns to the dashboard. Repeat warm, and with the app auto-locked in the background.
+4. **Reboot.** Pending reminders survive a device reboot, through the boot receiver.
+5. **Company switch / sign-out.** Switching company re-plans for the new company only. Signing out clears all reminders.
+6. **Delete account on production after the rules redeploy:**
+   - (a) a collector;
+   - (b) one of two owners;
+   - (c) a sole owner who is the only member: the company closes and nobody can open it;
+   - (d) a sole owner with a collector: blocked.
+
+   Check that ledger records keep `recordedByName`.
+7. **Change MPIN, biometric toggle and auto-lock** (Immediately / 5 min) on a real device.
+
+
+**Module Lead — Sprint 8 Review (attempt 1):**
+Date: 2026-11-27
+
+- Re-ran: `flutter analyze` is clean and `flutter test` passes 1280/1280. `npm test` was left to the Tester; the rules were reviewed by reading.
+- **Verified OK:**
+  - the notification plan: IST timing, 14-day window, exclusions, 300 cap (nearest kept), copy, disjoint id ranges;
+  - scheduler triggers, debounce and serialisation, unchanged plans not re-sent, cancel on uid null;
+  - deep-link allow-list, hold, and cold start;
+  - Change MPIN (shared lockout, fresh salt), the biometric toggle requiring auth, auto-lock in secure storage;
+  - the delete-account per-role shape as one awaited batch;
+  - the close / member-delete rules: sole owner only, `isSelf` only;
+  - the manifest, with inexact alarms only;
+  - tokens and tabular figures, and no mock copy.
+- **F1 (HIGH, security):** `lock_controller.dart:43-64`. Backgrounding during the in-flight resume check is ignored and the timestamp is then cleared, so the next resume never locks. Fix: clear state at the start of `onResumed`, add a separate in-flight flag for deep links, and add a test.
+- **F2 (HIGH):** delete account on a 20 s timeout throws `OfflineRequired` and clears the flag, but the batch is already queued and lands later while Auth stays signed in. Fix: treat a timeout as pending: keep the flag, finish clean-up on the ack, and refuse up front when offline.
+- **F3 (MEDIUM, Play policy):** delete account can't be reached with no company (gate none). Fix: allow `/settings/delete-account` and Privacy when the gate is none, and link them from the onboarding screens.
+- **F4 (MEDIUM):** on a company switch the old company's alarms persist until the new portfolio loads, and old tray notifications deep-link into the wrong company. Fix: `cancelAll` on a cid change, and optionally add `?c=` to payloads.
+- **F5 (LOW):** the rules can't stop a sole owner closing a company that still has members. Optionally make closed companies inert in the rules.
+- **F6 (LOW):** add the Record Payment sheet, Rollover, Members, Create contract and Terms to the responsive matrix, plus a deep-link-during-lock-check test.
+- **N1–N3:** positional reminder ids; `ref.listen` in `App`; tabular figures for the version and tries-left text.
+- **Verdict: CHANGES REQUESTED** (F1, F2, F3 required; F4 this sprint).
+
+**Tester — Sprint 8 Results (attempt 1):**
+
+New tests (test only):
+- `test/domain/ledger/tester/s8_notification_plan_test.dart` (25 + 1 skip)
+- `test/features/notifications/tester/s8_scheduler_test.dart` (13)
+- `test/features/settings/tester/s8_settings_test.dart` (27 + 2 skip)
+- `firebase/test/tester_s8.test.js` (22 + 2 skip)
+
+Coverage:
+- **Notification plan:** copy, time and window edges; exclusions; the cap; id stability; IST midnight edges.
+- **Scheduler:** payment, cancel, company switch and sign-out triggers; no re-send of an unchanged plan.
+- **Deep links:** the allow-list, hold-until-unlock, and cold start.
+- **Settings:** Change MPIN lockout, biometric, auto-lock, time picker, permission banner, roles, sign-out.
+- **Delete account:** per role, with the ledger left untouched.
+- **Responsive.**
+- **Rules:** close / member-delete abuse cases.
+
+Full runs: `flutter analyze` is clean; `flutter test` gives 1345 passed + 3 skipped; `npm test` gives 612 passed + 2 skipped.
+
+Bugs Found:
+- **S8-B1 (low, = ML F4):** after a company switch, old tray notifications stay and deep-link into the new company, and ids are company-independent.
+- **S8-B2 (medium):** offline, Delete account spins for about 38 s before the error. Cause: Riverpod's default retry on `accountExitPlanProvider`.
+- **S8-B3 (medium):** the Members & invites tile overflows at 360 with 1.3× text (`member_tile.dart:45,53`).
+- **S8-B4 (medium, rules):** a still-pending owner invite can be accepted on a closed company; the invite-accept branches lack a `closedAt` check.
+- **S8-B5 (low, pre-existing):** a co-owner can drop another owner from `ownerUids` without that owner's member-doc change, and with the close branch can then close the company while others keep access.
+
+Sprint Test Summary: 87 passed, 5 failed (skipped).
+
+**Fixes for Module Lead + Tester findings (Sprint 8, attempt 2):**
+
+- **F1 (HIGH, auto-lock):** `lock_controller.dart`.
+  - `onResumed` clears the background timestamp **at the start** again, so a background event during the async check is recorded and judged on the next resume.
+  - The new `LockCheckInFlight` counter marks "lock decision running". `readyDeepLink` waits for it as well as for the background timestamp.
+  - Tests:
+    - `session_controller_test.dart` "F1": resume, background again during the check, then resume after 2 min → **locked**;
+    - `deep_link_test.dart` "F1": a tap while the check is in flight stays pending and opens when it ends.
+- **F2 (HIGH, delete account timeout).** Before, a timeout cleared the flag while the queued batch could still land later. Now:
+  - **Offline is refused up front**, before the Google prompt (`SyncSignals.online().first`).
+  - `AccountRepository.commitExit`'s timeout throws `AckPendingFailure`, a new `OfflineRequiredFailure` subtype in `app_failure.dart` (so the Tester's S8-A6 still holds), carrying the still-running commit future.
+  - `SettingsActions.deleteAccount` treats it as **pending**: `AccountDeletionInProgress` stays set (removed-member guard and scheduler stand down), and on the ack `_finishDeletion()` runs the clean-up and `completeAccountDeletion()`.
+  - A later server rejection clears the flag and shows "Your account couldn't be deleted…".
+  - The screen shows "Deletion will finish when you're back online…" (icon + text).
+  - Tests: `delete_account_test.dart` "F2" (a delayed commit: pending, then deleted after the ack) and "F2 offline up front" (no re-auth).
+- **S8-B2:** `accountExitPlanProvider` uses `@Riverpod(retry: noRetry)`, so the offline error shows at once. The Tester's **S8-A5b is un-skipped** and passes.
+- **F3 (Play policy):**
+  - `appRedirect` lets `/settings/delete-account` through when CompanyGate is **none**; `/legal/*` was already allowed in every stage.
+  - The new `OnboardingAccountLinks` (Privacy · Terms · **Delete account**) sits at the end of the Register and Join screens.
+  - The delete screen says "You're not a member of any company." when there is nothing to leave.
+  - Test: "F3" deletes a company-less user from onboarding: Auth deleted, `users` and `user_settings` gone, back on sign-in.
+- **F4 / S8-B1 (company isolation).**
+  - The scheduler tracks the company of the current plan (`_plannedCid`). When the active company changes (or is lost), it calls `cancelAll()` at once, clearing **pending alarms and delivered tray notifications**. It does not wait for the debounce or the new company's figures, then plans the new company.
+  - Payloads carry `c={cid}` (`AppRoutes.withCompany` / `companyOf` / `withoutCompany`). The allow-list accepts only `c` as an extra parameter.
+  - `App` drops a link for another company and shows "That reminder is for another company. Switch company to see it." It does not auto-switch: that is safer, and an old tray notification is rare because switching clears the tray. A link for the active company opens with the tag stripped.
+  - **Ids stay per plan (not company-aware)**; isolation relies on `cancelAll` on a switch plus the `c=` tag. The plan now carries `PlannedNotification.companyId`.
+  - The Tester's **S8-P19 is rewritten** to assert this guarantee: every entry names its company, and A/B entries differ. The comment explains the choice; S8-P18 (same id scheme) still holds.
+  - Tests: `company_switch_test.dart` (6) and `deep_link_test.dart` (foreign-company link dropped; active-company link opens).
+- **S8-B3:** `member_tile.dart` now wraps name + "You" + role pill (`Wrap`, name up to 2 lines) and keeps the ⋮ menu on the row. The Tester's **S8-R1@360 is un-skipped** and passes.
+- **S8-B4 (rules):** the owner-invite branch of `companies` update requires `closedAt == null`; the invite branch of `members` create requires `!closed(cid)`. The Tester's **T22 is un-skipped**; their T22-doc became "T22-after" (accept and ledger read both denied).
+- **F5 (rules, closed companies inert):**
+  - `member(cid)` and `memberAfter(cid)` now also require the company not to be closed (`get` / `getAfter` of the company doc, the same doc `owner()` already reads).
+  - A remaining member of a closed company therefore can't read or write anything there.
+  - Owners can no longer touch `closedAt` / `closedBy` through the normal edit branch.
+  - Tests: `sprint8_account.test.js` (the collector of a closed TEAM is denied read, member-doc read, transaction create and profile edit; closed fields can't be set by an owner edit).
+- **S8-B5 (rules):** owner edits of `companies/{cid}` now require `removedOwnerConsistent()`. At most one uid may leave `ownerUids` per write, and that member doc must be deleted or be a non-owner after the batch (`getAfter`).
+  - The existing demote, remove-owner and leave-as-owner flows still pass; tests were added for demote, remove and "two at once denied".
+  - The Tester's **T2 is un-skipped**. T2-doc became "T2-after": the strip is refused, so a co-owner can never close as "sole" owner.
+- **Optional:**
+  - **F6:** the responsive matrix adds Terms, the Record Payment sheet (overdue loan), Rollover, Create contract and Members & invites at 400 / 1024 / 360@1.3×, 15 more cases. No overflow.
+  - **N2:** `App` now `ref.listen`s the scheduler and the notification bootstrap instead of watching them, so a new plan no longer rebuilds the app.
+  - **N3:** tabular figures for the "Version …" line, the members/invites count line and `InlineError` (the "N tries left" text).
+- **Verification:**
+  - build_runner OK; `flutter analyze` clean.
+  - `flutter test`: **1374 passed, 0 skipped** (baseline 1345 + 3 skipped).
+  - `notification_plan.dart` keeps 100% line coverage (94/94).
+  - `cd firebase && npm test` (run alone, afterwards): **619 passed, 0 skipped** (baseline 612 + 2 skipped).
+  - `flutter build apk --debug --target-platform android-x64`: built.
+  - Nothing was committed, deployed or installed.
+- **REDEPLOY REQUIRED** (`firebase deploy --only firestore:rules`). It covers attempt 1's close-company branches plus attempt 2's B4, F5 and B5 rules.
+  - Until it is deployed, a sole owner who is the only member can't delete their account.
+  - After it is deployed, a closed company is unreadable to everyone.
+  - Smoke-test on production after the deploy: a demote, a remove-owner, and a normal payment and onboarding as owner and collector. `member()` now does one extra `get` of the company doc, the same doc `owner()` reads.
+- **Extra device checks (beyond attempt 1's list):**
+  - Switch company with a reminder in the tray: the tray clears.
+  - Tap an old reminder of another company, if one survives: the notice shows and nothing opens.
+  - Turn on airplane mode mid-deletion: the pending message shows; reconnect and the account finishes deleting.
+  - With no company, delete the account from the Register screen.
+
+
+**Orchestrator re-run (attempt 2):** `flutter analyze` is clean, `flutter test` passes 1374/1374 and `npm test` passes 619/619, with 0 skipped.
+
+**Rules deployed 2026-11-28** to `microfinance-loan-mgr`: close-company branches, closed companies made inert, invite-accept refused on closed companies, and `ownerUids` ⇔ member-doc integrity.
+
+**Human verification + live checks (2026-11-28): PASSED.** The user confirmed ("it worked").
+- **Live smoke test:** Settings loads under the new `member()` rule ("All changes synced"). A ₹300 payment and a small onboarding (#13, 26 payments) both landed with 0 rejections.
+- **Android 13 permission prompt:** shown and allowed.
+- **Digest:** set to 08:33, fired at 08:34 (inexact) with "4 collections due today · ₹1,601". The overdue nudge read "5 overdue · ₹3,600 · highest 3 days"; both match the data.
+- **Deep link:** the app was killed, then the overdue nudge was tapped. It opened on the MPIN screen, then landed on the Overdue tracker (2 loans, ₹3,600).
+- **Reboot persistence:** 26 alarms (13 digests + 13 nudges) were restored by the boot receiver without the app being opened.
+- **User-verified:** Change MPIN, and the auto-lock fix (F1).
+- **Deferred by the user:** Delete account. It will be the last test, run on the tablet emulator with a spare account.
+- **Carried to Sprint 9:** the notification small icon still shows the Flutter logo, to be replaced along with the launcher icon.
 ---
 
 ## 5. Final Review & Full Regression

@@ -22,6 +22,9 @@ import '../../features/overdue/presentation/screens/overdue_screen.dart';
 import '../../features/onboarding/application/onboarding_providers.dart';
 import '../../features/onboarding/presentation/screens/join_company_screen.dart';
 import '../../features/onboarding/presentation/screens/register_company_screen.dart';
+import '../../features/settings/presentation/screens/change_mpin_screen.dart';
+import '../../features/settings/presentation/screens/delete_account_screen.dart';
+import '../../features/settings/presentation/screens/legal_screen.dart';
 import '../../features/splash/presentation/splash_screen.dart';
 import '../../features/splash/presentation/theme_gallery_screen.dart';
 import '../../firebase_options.dart';
@@ -36,14 +39,42 @@ abstract final class AppRoutes {
   static const String mpin = '/mpin';
   static const String home = '/home';
 
-  /// Members & invites (Settings is Sprint 8; reached from the Home menu).
+  /// Shell tabs: `/home?tab=…`.
+  static const String tabParam = 'tab';
+  static String homeTab(String tab) => '$home?$tabParam=$tab';
+
+  /// Dashboard scrolled to Due Today (daily digest notification).
+  static const String dueToday = '$home?$tabParam=today';
+
+  /// Settings tab of the shell.
+  static const String settings = '$home?$tabParam=settings';
+
+  /// Members & invites (Settings → Company).
   static const String members = '/settings/members';
 
-  /// Overdue tracker (from the dashboard; notification payload in Sprint 8).
+  /// Change MPIN (Settings → Security).
+  static const String changeMpin = '/settings/mpin';
+
+  /// Delete account (Settings → Account).
+  static const String deleteAccount = '/settings/delete-account';
+
+  /// Overdue tracker (dashboard; overdue-nudge notification).
   static const String overdue = '/overdue';
 
   /// In-app routes reachable once a company is ready.
-  static const Set<String> companyShell = <String>{home, members, overdue};
+  static const Set<String> companyShell = <String>{
+    home,
+    members,
+    changeMpin,
+    deleteAccount,
+    overdue,
+  };
+
+  /// Privacy policy and terms: reachable in every auth stage (sign-in and
+  /// MPIN screens link to them).
+  static const String privacy = '/legal/privacy';
+  static const String terms = '/legal/terms';
+  static const Set<String> legal = <String>{privacy, terms};
 
   /// Borrower profile (compact windows; tablets show it in the split view).
   static const String borrowers = '/borrowers';
@@ -72,6 +103,55 @@ abstract final class AppRoutes {
       companyShell.contains(path) ||
       path.startsWith('$borrowers/') ||
       path.startsWith('$contracts/');
+
+  /// Whether [location] is a place a notification may open: Due Today,
+  /// the overdue tracker or a contract's Record Payment. Anything else in a
+  /// payload is ignored.
+  ///
+  /// A target may carry the company it was planned for as `c={cid}` (see
+  /// [withCompany]); any other extra query parameter is refused.
+  static bool isNotificationTarget(String location) {
+    final uri = Uri.tryParse(location);
+    if (uri == null || uri.hasScheme || uri.hasAuthority) return false;
+    if (uri.queryParameters.containsKey(companyParam) &&
+        (uri.queryParameters[companyParam] ?? '').isEmpty) {
+      return false;
+    }
+    final base = withoutCompany(location);
+    if (base == dueToday || base == overdue) return true;
+    final b = Uri.parse(base);
+    final s = b.pathSegments;
+    return !b.hasQuery &&
+        s.length == 3 &&
+        '/${s[0]}' == contracts &&
+        s[1].isNotEmpty &&
+        s[1] != 'new' &&
+        s[1] != 'onboard' &&
+        s[2] == 'pay';
+  }
+
+  /// Query parameter naming the company a notification was planned for.
+  static const String companyParam = 'c';
+
+  /// [location] with `c=$cid` appended.
+  static String withCompany(String location, String cid) {
+    final sep = location.contains('?') ? '&' : '?';
+    return '$location$sep$companyParam=${Uri.encodeQueryComponent(cid)}';
+  }
+
+  /// The `c=` company of a notification location, or null.
+  static String? companyOf(String location) =>
+      Uri.tryParse(location)?.queryParameters[companyParam];
+
+  /// [location] without its `c=` parameter.
+  static String withoutCompany(String location) {
+    final uri = Uri.parse(location);
+    if (!uri.queryParameters.containsKey(companyParam)) return location;
+    final rest = <String, String>{...uri.queryParameters}..remove(companyParam);
+    final path = uri.path;
+    if (rest.isEmpty) return path;
+    return Uri(path: path, queryParameters: rest).toString();
+  }
 
   static const String onboardingRegister = '/onboarding/register';
   static const String onboardingJoin = '/onboarding/join';
@@ -120,6 +200,7 @@ String? appRedirect({
   bool devRoutes = kDebugMode,
 }) {
   final path = uri.path;
+  if (AppRoutes.legal.contains(path)) return null;
   final target = switch (stage) {
     AuthStage.loading => AppRoutes.splash,
     AuthStage.signedOut => AppRoutes.signIn,
@@ -140,7 +221,10 @@ String? appRedirect({
     case CompanyGate.loading:
       return onboarding || path == AppRoutes.splash ? null : AppRoutes.splash;
     case CompanyGate.none:
-      return onboarding ? null : AppRoutes.onboardingRegister;
+      // Account deletion must stay reachable without a company (Play
+      // account-deletion policy); legal pages are allowed above.
+      if (onboarding || path == AppRoutes.deleteAccount) return null;
+      return AppRoutes.onboardingRegister;
     case CompanyGate.ready:
       if (onboarding || AppRoutes.inCompanyShell(path)) return null;
       if (devRoutes && path == AppRoutes.devGallery) return null;
@@ -236,8 +320,9 @@ GoRouter appRouter(Ref ref) {
       ),
       GoRoute(
         path: AppRoutes.home,
-        builder: (BuildContext context, GoRouterState state) =>
-            const HomeScreen(),
+        builder: (BuildContext context, GoRouterState state) => HomeScreen(
+          initialTab: state.uri.queryParameters[AppRoutes.tabParam],
+        ),
       ),
       GoRoute(
         path: '${AppRoutes.borrowers}/:id',
@@ -296,6 +381,26 @@ GoRouter appRouter(Ref ref) {
         path: AppRoutes.members,
         builder: (BuildContext context, GoRouterState state) =>
             const MembersScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.changeMpin,
+        builder: (BuildContext context, GoRouterState state) =>
+            const ChangeMpinScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.deleteAccount,
+        builder: (BuildContext context, GoRouterState state) =>
+            const DeleteAccountScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.privacy,
+        builder: (BuildContext context, GoRouterState state) =>
+            const LegalScreen(document: LegalDocument.privacy),
+      ),
+      GoRoute(
+        path: AppRoutes.terms,
+        builder: (BuildContext context, GoRouterState state) =>
+            const LegalScreen(document: LegalDocument.terms),
       ),
       if (kDebugMode)
         GoRoute(

@@ -15,6 +15,10 @@ import 'package:nordic_ledger/features/auth/data/auth_repository.dart';
 import 'package:nordic_ledger/features/auth/data/biometric_service.dart';
 import 'package:nordic_ledger/features/auth/data/mpin_store.dart';
 import 'package:nordic_ledger/features/auth/data/secure_key_value_store.dart';
+import 'package:nordic_ledger/features/notifications/application/notification_providers.dart';
+import 'package:nordic_ledger/features/notifications/data/local_notification_gateway.dart';
+import 'package:nordic_ledger/features/settings/application/settings_providers.dart';
+import 'package:nordic_ledger/features/settings/data/sync_signals.dart';
 
 const AuthUser kAsha = AuthUser(
   uid: 'uid-asha',
@@ -82,6 +86,18 @@ final class FakeAuthRepository implements AuthRepository {
     signOutCalls++;
     emit(null);
   }
+
+  /// Thrown by `deleteAccount` when set.
+  AppFailure? deleteFailure;
+  int deleteCalls = 0;
+
+  @override
+  Future<void> deleteAccount() async {
+    deleteCalls++;
+    final failure = deleteFailure;
+    if (failure != null) throw failure;
+    emit(null);
+  }
 }
 
 final class FakeBiometricService implements BiometricService {
@@ -124,6 +140,13 @@ final class AuthHarness {
   /// Firestore for the company layer (memberships, settings, member doc).
   final FakeFirebaseFirestore db = FakeFirebaseFirestore();
 
+  /// Local notifications (Sprint 8).
+  final InMemoryNotificationGateway notifications =
+      InMemoryNotificationGateway();
+
+  /// Settings sync card inputs (Sprint 8).
+  final FakeSyncSignals sync = FakeSyncSignals();
+
   List<Override> get overrides => <Override>[
     firestoreProvider.overrideWithValue(db),
     installReferrerSourceProvider.overrideWithValue(
@@ -133,6 +156,9 @@ final class AuthHarness {
     secureKeyValueStoreProvider.overrideWithValue(storage),
     biometricServiceProvider.overrideWithValue(biometric),
     clockProvider.overrideWithValue(clock),
+    localNotificationGatewayProvider.overrideWithValue(notifications),
+    notificationDebounceProvider.overrideWithValue(Duration.zero),
+    syncSignalsProvider.overrideWithValue(sync),
   ];
 
   ProviderContainer container() {

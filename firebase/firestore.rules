@@ -16,10 +16,19 @@ service cloud.firestore {
     function memberPath(cid, uid) { return /databases/$(database)/documents/companies/$(cid)/members/$(uid); }
     function invitePath(code) { return /databases/$(database)/documents/invites/$(code); }
 
-    // Member of cid before this request.
-    function member(cid) { return signedIn() && exists(memberPath(cid, request.auth.uid)); }
-    // Member of cid once this batch / transaction is applied.
-    function memberAfter(cid) { return signedIn() && existsAfter(memberPath(cid, request.auth.uid)); }
+    // Sprint 8: a company closed at account deletion (closedAt set) is inert:
+    // no member reads or writes, no invite can be accepted into it.
+    function closed(cid) { return get(companyPath(cid)).data.get('closedAt', null) != null; }
+    function closedAfter(cid) { return getAfter(companyPath(cid)).data.get('closedAt', null) != null; }
+
+    // Member of cid before this request (an open company).
+    function member(cid) {
+      return signedIn() && exists(memberPath(cid, request.auth.uid)) && !closed(cid);
+    }
+    // Member of cid once this batch / transaction is applied (an open company).
+    function memberAfter(cid) {
+      return signedIn() && existsAfter(memberPath(cid, request.auth.uid)) && !closedAfter(cid);
+    }
     // Owner of cid before this request (company.ownerUids).
     function owner(cid) {
       return signedIn() && request.auth.uid in get(companyPath(cid)).data.ownerUids;
@@ -162,22 +171,48 @@ service cloud.firestore {
         && request.resource.data.ownerUids == [request.auth.uid]
         && getAfter(memberPath(cid, request.auth.uid)).data.role == 'owner';
 
+      // Sprint 8 (S8-B5): an owner who drops someone from ownerUids must, in
+      // the same batch, delete that member doc or make it a non-owner, so
+      // ownerUids and member roles never diverge (at most one per write).
+      function removedOwnerConsistent() {
+        let removed = resource.data.ownerUids.removeAll(request.resource.data.ownerUids);
+        return removed.size() == 0
+          || (removed.size() == 1
+              && (!existsAfter(memberPath(cid, removed[0]))
+                  || getAfter(memberPath(cid, removed[0])).data.role != 'owner'));
+      }
+
       allow update: if
         // Owner edits (incl. nextLoanNo increment, ownerUids on role change).
         (owner(cid)
           && validCompany(request.resource.data)
-          && !affectedKeys().hasAny(['createdBy', 'createdAt'])
-          && request.resource.data.nextLoanNo >= resource.data.nextLoanNo)
+          && !affectedKeys().hasAny(['createdBy', 'createdAt', 'closedAt', 'closedBy'])
+          && request.resource.data.nextLoanNo >= resource.data.nextLoanNo
+          && removedOwnerConsistent())
         ||
-        // An invitee accepting an *owner* invite adds only themselves to ownerUids.
+        // An invitee accepting an *owner* invite adds only themselves to ownerUids
+        // (never into a closed company).
         (signedIn()
+          && resource.data.get('closedAt', null) == null
           && !member(cid)
           && onlyChanged(['ownerUids'])
           && request.resource.data.ownerUids.toSet()
                == resource.data.ownerUids.toSet().union([request.auth.uid].toSet())
           && getAfter(memberPath(cid, request.auth.uid)).data.role == 'owner'
           && inviteAcceptedBySelf(cid,
-               getAfter(memberPath(cid, request.auth.uid)).data.inviteCode, 'owner'));
+               getAfter(memberPath(cid, request.auth.uid)).data.inviteCode, 'owner'))
+        ||
+        // Sprint 8, close company (account deletion): the sole owner, who is
+        // also leaving, empties ownerUids and stamps closedAt / closedBy in the
+        // same batch that deletes their member doc. Financial records stay;
+        // with no member left nobody can read the company again.
+        (owner(cid)
+          && ownersBefore(cid) == [request.auth.uid]
+          && onlyChanged(['ownerUids', 'closedAt', 'closedBy'])
+          && request.resource.data.ownerUids == []
+          && request.resource.data.closedBy == request.auth.uid
+          && request.resource.data.closedAt == request.time
+          && !existsAfter(memberPath(cid, request.auth.uid)));
 
       allow delete: if false;
 
@@ -210,8 +245,10 @@ service cloud.firestore {
             && getAfter(companyPath(cid)).data.createdBy == memberUid
             && ownersAfter(cid) == [memberUid])
           ||
-          // Invite accept: client passes the code in `inviteCode`.
+          // Invite accept: client passes the code in `inviteCode` (never into a
+          // closed company).
           (isSelf(memberUid)
+            && !closed(cid)
             && request.resource.data.inviteCode is string
             && inviteAcceptedBySelf(cid, request.resource.data.inviteCode,
                                     request.resource.data.role))
@@ -230,9 +267,16 @@ service cloud.firestore {
 
         // Removal by an owner, or leaving by self; never the last owner, and the
         // company's ownerUids must no longer list the removed uid.
-        allow delete: if (owner(cid) || isSelf(memberUid))
-          && !soleOwner(cid, memberUid)
-          && !(memberUid in ownersAfter(cid));
+        allow delete: if ((owner(cid) || isSelf(memberUid))
+            && !soleOwner(cid, memberUid)
+            && !(memberUid in ownersAfter(cid)))
+          ||
+          // Sprint 8, account deletion: the sole owner leaves by closing the
+          // company in the same batch (see the companies update rule).
+          (isSelf(memberUid)
+            && soleOwner(cid, memberUid)
+            && ownersAfter(cid).size() == 0
+            && getAfter(companyPath(cid)).data.get('closedBy', null) == memberUid);
       }
 
       // ---------------------------------------------------------- borrowers

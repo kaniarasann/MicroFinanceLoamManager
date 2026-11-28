@@ -9,20 +9,34 @@ import '../../../../core/routing/app_router.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/adaptive_scaffold.dart';
 import '../../../../core/widgets/day_ticker.dart';
-import '../../../../core/widgets/empty_state.dart';
 import '../../../borrowers/presentation/screens/borrowers_screen.dart';
 import '../../../calendar/presentation/screens/calendar_screen.dart';
 import '../../../company/application/company_providers.dart';
 import '../../../company/presentation/widgets/company_switcher_sheet.dart';
 import '../../../company/presentation/widgets/role_pill.dart';
 import '../../../../domain/models/enums.dart';
+import '../../../settings/presentation/screens/settings_screen.dart';
 import 'dashboard_screen.dart';
 
 /// The company shell: Dashboard · Calendar · Borrowers · Settings. The
 /// header shows "{Company} ▾ · {Role}" and opens the company switcher.
 /// Owners get the "New loan" FAB in the expanded rail.
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({this.initialTab, super.key});
+
+  /// `?tab=` of `/home`: `dashboard`, `today` (Dashboard scrolled to Due
+  /// Today, the digest notification), `calendar`, `borrowers` or
+  /// `settings`. Anything else keeps the current tab.
+  final String? initialTab;
+
+  /// Destination index for a `?tab=` value, or null.
+  static int? indexForTab(String? tab) => switch (tab) {
+    'dashboard' || 'today' => dashboardIndex,
+    'calendar' => calendarIndex,
+    'borrowers' => borrowersIndex,
+    'settings' => settingsIndex,
+    _ => null,
+  };
 
   static const List<AdaptiveDestination> destinations = <AdaptiveDestination>[
     AdaptiveDestination(
@@ -53,6 +67,9 @@ class HomeScreen extends ConsumerStatefulWidget {
   /// Index of the Borrowers destination.
   static const int borrowersIndex = 2;
 
+  /// Index of the Settings destination.
+  static const int settingsIndex = 3;
+
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
@@ -60,11 +77,33 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   int _index = 0;
 
+  /// Bumped to scroll the dashboard to Due Today.
+  int _dueTodayFocus = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _applyTab(widget.initialTab);
+  }
+
+  @override
+  void didUpdateWidget(HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // A notification can re-open `/home?tab=today` while already on /home.
+    _applyTab(widget.initialTab);
+  }
+
+  void _applyTab(String? tab) {
+    final i = HomeScreen.indexForTab(tab);
+    if (i == null) return;
+    _index = i;
+    if (tab == 'today') _dueTodayFocus++;
+  }
+
   @override
   Widget build(BuildContext context) {
     final name = ref.watch(activeCompanyNameProvider) ?? '';
     final role = ref.watch(currentRoleProvider);
-    final label = HomeScreen.destinations[_index].label;
 
     return DayTicker(
       child: AdaptiveScaffold(
@@ -112,23 +151,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
           actions: <Widget>[
-            // Temporary entry point until Settings (Sprint 8).
-            PopupMenuButton<String>(
-              key: const ValueKey<String>('home_menu'),
-              tooltip: 'More',
-              icon: const Icon(Icons.more_vert),
-              onSelected: (String route) =>
-                  unawaited(context.push<void>(route)),
-              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                PopupMenuItem<String>(
-                  key: const ValueKey<String>('menu_members'),
-                  value: AppRoutes.members,
-                  child: Text(
-                    role == Role.owner ? 'Members & invites' : 'Members',
-                  ),
-                ),
-              ],
-            ),
             if (kDebugMode)
               IconButton(
                 key: const ValueKey<String>('dev_gallery'),
@@ -152,17 +174,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         applyMargins: _index != HomeScreen.borrowersIndex,
         body: switch (_index) {
           HomeScreen.dashboardIndex => DashboardScreen(
+            focusDueToday: _dueTodayFocus,
             onOpenCalendar: () =>
                 setState(() => _index = HomeScreen.calendarIndex),
           ),
           HomeScreen.calendarIndex => const CalendarScreen(),
           HomeScreen.borrowersIndex => const BorrowersScreen(),
-          _ => EmptyState(
-            key: ValueKey<String>('home_placeholder_$_index'),
-            icon: HomeScreen.destinations[_index].icon,
-            title: '$label is on its way',
-            message: 'Settings arrive in the next sprint.',
-          ),
+          _ => const SettingsScreen(),
         },
       ),
     );

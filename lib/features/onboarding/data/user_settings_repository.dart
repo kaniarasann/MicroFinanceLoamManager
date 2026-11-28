@@ -32,6 +32,39 @@ class UserSettingsRepository {
         'schemaVersion': 1,
       };
 
+  /// The merge patch for the notification preferences (the whole map, so
+  /// a stale field never survives).
+  static Map<String, dynamic> notificationsPatch(NotificationPrefs prefs) =>
+      <String, dynamic>{
+        'notifications': prefs.toJson(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'schemaVersion': 1,
+      };
+
+  /// Merge-writes `notifications`. Like [setActiveCompanyId] it resolves
+  /// once the write is in the local cache, so it works offline.
+  Future<void> setNotificationPrefs(String uid, NotificationPrefs prefs) async {
+    final Future<void> write;
+    try {
+      write = rawRef(
+        _db,
+        uid,
+      ).set(notificationsPatch(prefs), SetOptions(merge: true));
+    } on Object catch (e, st) {
+      throw mapFirebaseException(e, st);
+    }
+    unawaited(
+      write.then<void>(
+        (_) {},
+        onError: (Object e) => developer.log(
+          'notifications write failed',
+          name: 'settings',
+          error: e,
+        ),
+      ),
+    );
+  }
+
   Future<UserSettings?> get(String uid) async {
     try {
       final s = await _refs.userSettings(uid).get();

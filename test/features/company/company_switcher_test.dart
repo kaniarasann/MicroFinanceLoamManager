@@ -140,15 +140,17 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('Home header menu opens Members & invites', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('Settings → Members & invites', (WidgetTester tester) async {
     await pumpLocked(tester, 400);
     await unlock(tester);
-    await tester.tap(find.byKey(const ValueKey<String>('home_menu')));
-    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Members & invites'), findsOneWidget);
-    await tester.tap(find.byKey(const ValueKey<String>('menu_members')));
+    await tester.ensureVisible(
+      find.byKey(const ValueKey<String>('settings_members')),
+    );
+    await tester.tap(find.byKey(const ValueKey<String>('settings_members')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byType(MembersScreen), findsOneWidget);

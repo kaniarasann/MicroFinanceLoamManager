@@ -11,6 +11,20 @@ import 'session_controller.dart';
 
 part 'lock_controller.g.dart';
 
+/// Number of auto-lock resume checks running (normally 0 or 1). Non-zero
+/// means "the app may be about to lock": deep links wait.
+@Riverpod(keepAlive: true)
+class LockCheckInFlight extends _$LockCheckInFlight {
+  @override
+  int build() => 0;
+
+  void begin() => state = state + 1;
+
+  void end() {
+    if (state > 0) state = state - 1;
+  }
+}
+
 /// Auto-lock on background.
 ///
 /// State is the moment the unlocked app went to the background (null while
@@ -49,10 +63,24 @@ class LockController extends _$LockController {
   }
 
   /// Locks if the app was in the background for >= autoLockMinutes.
+  ///
+  /// The timestamp is cleared at once, so a new background event during the
+  /// (async) check is recorded and judged on the next resume. While the
+  /// check runs, [LockCheckInFlight] is set (a notification deep link waits
+  /// for it).
   Future<void> onResumed() async {
     final since = state;
     state = null;
     if (since == null) return;
+    final inFlight = ref.read(lockCheckInFlightProvider.notifier)..begin();
+    try {
+      await _checkAfterResume(since);
+    } finally {
+      inFlight.end();
+    }
+  }
+
+  Future<void> _checkAfterResume(DateTime since) async {
     final session = ref.read(sessionControllerProvider);
     final uid = session.user?.uid;
     if (session.stage != AuthStage.unlocked || uid == null) return;

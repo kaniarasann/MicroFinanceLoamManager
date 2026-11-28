@@ -27,10 +27,18 @@ import '../widgets/today_due_card.dart';
 /// tablets), today's due and the Due Today list. Every figure comes from
 /// [portfolioProvider] (the offline cache through `lib/domain/ledger/`).
 class DashboardScreen extends ConsumerWidget {
-  const DashboardScreen({this.onOpenCalendar, super.key});
+  const DashboardScreen({
+    this.onOpenCalendar,
+    this.focusDueToday = 0,
+    super.key,
+  });
 
   /// Switches the shell to the Calendar tab ("View schedule").
   final VoidCallback? onOpenCalendar;
+
+  /// When non-zero, the Due Today list is scrolled into view (the daily
+  /// digest notification). A new value scrolls again.
+  final int focusDueToday;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -47,20 +55,62 @@ class DashboardScreen extends ConsumerWidget {
         title: "Couldn't load the dashboard",
         message: 'Check your access to this company and try again.',
       ),
-      data: (PortfolioMetrics m) =>
-          _DashboardBody(metrics: m, onOpenCalendar: onOpenCalendar),
+      data: (PortfolioMetrics m) => _DashboardBody(
+        metrics: m,
+        onOpenCalendar: onOpenCalendar,
+        focusDueToday: focusDueToday,
+      ),
     );
   }
 }
 
-class _DashboardBody extends ConsumerWidget {
-  const _DashboardBody({required this.metrics, this.onOpenCalendar});
+class _DashboardBody extends ConsumerStatefulWidget {
+  const _DashboardBody({
+    required this.metrics,
+    this.onOpenCalendar,
+    this.focusDueToday = 0,
+  });
 
   final PortfolioMetrics metrics;
   final VoidCallback? onOpenCalendar;
+  final int focusDueToday;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_DashboardBody> createState() => _DashboardBodyState();
+}
+
+class _DashboardBodyState extends ConsumerState<_DashboardBody> {
+  final GlobalKey _dueTodayKey = GlobalKey(debugLabel: 'due_today');
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.focusDueToday != 0) _scrollToDueToday();
+  }
+
+  @override
+  void didUpdateWidget(_DashboardBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.focusDueToday != oldWidget.focusDueToday) _scrollToDueToday();
+  }
+
+  void _scrollToDueToday() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = _dueTodayKey.currentContext;
+      if (!mounted || target == null) return;
+      unawaited(
+        Scrollable.ensureVisible(
+          target,
+          duration: const Duration(milliseconds: 300),
+        ),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final metrics = widget.metrics;
+    final onOpenCalendar = widget.onOpenCalendar;
     final size = WindowSize.of(context);
     final isOwner = ref.watch(currentRoleProvider) == Role.owner;
     final today = ref.watch(todayProvider);
@@ -90,9 +140,12 @@ class _DashboardBody extends ConsumerWidget {
       onViewOverdue: openOverdue,
     );
     final todayCard = TodayDueCard(todayDue: m.todayDue);
-    final dueList = DueTodayList(
-      items: m.todayDue.items,
-      onViewSchedule: onOpenCalendar,
+    final dueList = KeyedSubtree(
+      key: _dueTodayKey,
+      child: DueTodayList(
+        items: m.todayDue.items,
+        onViewSchedule: onOpenCalendar,
+      ),
     );
 
     const gap = SizedBox(height: AppSpacing.md);
@@ -147,10 +200,15 @@ class _DashboardBody extends ConsumerWidget {
       ];
     }
 
-    return ListView(
+    // A Column (not a lazy list) so the Due Today anchor is always laid
+    // out for the notification deep link.
+    return SingleChildScrollView(
       key: const ValueKey<String>('dashboard'),
       padding: AppInsets.pageBody,
-      children: children,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      ),
     );
   }
 }

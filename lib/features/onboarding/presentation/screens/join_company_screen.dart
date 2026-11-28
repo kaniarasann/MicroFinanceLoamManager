@@ -17,6 +17,7 @@ import '../../data/invite_repository.dart';
 import '../widgets/account_chip.dart';
 import '../widgets/invite_code_boxes.dart';
 import '../widgets/invite_preview_card.dart';
+import '../widgets/onboarding_account_links.dart';
 import '../widgets/onboarding_layout.dart';
 
 /// Copy for each join failure.
@@ -263,6 +264,7 @@ class _JoinCompanyScreenState extends ConsumerState<JoinCompanyScreen> {
           const SizedBox(height: AppSpacing.lg),
           InvitePreviewCard(preview: preview, now: now),
         ],
+        const OnboardingAccountLinks(),
       ],
     );
   }

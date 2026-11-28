@@ -50,20 +50,21 @@ class MemberTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Row(
+                    // Wraps (name, "You", role pill) instead of overflowing
+                    // on narrow windows with large text.
+                    Wrap(
+                      spacing: AppSpacing.sm,
+                      runSpacing: AppSpacing.xs,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: <Widget>[
-                        Flexible(
-                          child: Text(
-                            member.displayName,
-                            style: AppTextStyles.titleMd,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                        Text(
+                          member.displayName,
+                          style: AppTextStyles.titleMd,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        if (isSelf) ...<Widget>[
-                          const SizedBox(width: AppSpacing.sm),
-                          const _YouTag(),
-                        ],
+                        if (isSelf) const _YouTag(),
+                        RolePill(role: member.role),
                       ],
                     ),
                     if (phone != null && phone.isNotEmpty)
@@ -76,8 +77,6 @@ class MemberTile extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: AppSpacing.sm),
-              RolePill(role: member.role),
               if (canManage)
                 busy
                     ? const Padding(

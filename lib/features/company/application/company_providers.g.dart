@@ -800,6 +800,77 @@ final class ActiveCompanyNameProvider
 
 String _$activeCompanyNameHash() => r'a458da0eae951af6efd774cfcfd0aceb97b3d58a';
 
+/// True while this user is deleting their account. The removed-member guard
+/// and the notification scheduler stand down, so the deletion batch is not
+/// answered with "lost access" side effects (which would re-create
+/// `user_settings`).
+
+@ProviderFor(AccountDeletionInProgress)
+final accountDeletionInProgressProvider = AccountDeletionInProgressProvider._();
+
+/// True while this user is deleting their account. The removed-member guard
+/// and the notification scheduler stand down, so the deletion batch is not
+/// answered with "lost access" side effects (which would re-create
+/// `user_settings`).
+final class AccountDeletionInProgressProvider
+    extends $NotifierProvider<AccountDeletionInProgress, bool> {
+  /// True while this user is deleting their account. The removed-member guard
+  /// and the notification scheduler stand down, so the deletion batch is not
+  /// answered with "lost access" side effects (which would re-create
+  /// `user_settings`).
+  AccountDeletionInProgressProvider._()
+    : super(
+        from: null,
+        argument: null,
+        retry: null,
+        name: r'accountDeletionInProgressProvider',
+        isAutoDispose: false,
+        dependencies: null,
+        $allTransitiveDependencies: null,
+      );
+
+  @override
+  String debugGetCreateSourceHash() => _$accountDeletionInProgressHash();
+
+  @$internal
+  @override
+  AccountDeletionInProgress create() => AccountDeletionInProgress();
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(bool value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<bool>(value),
+    );
+  }
+}
+
+String _$accountDeletionInProgressHash() =>
+    r'bed487b6d616c8e500811cba6fa523cfed30f6a8';
+
+/// True while this user is deleting their account. The removed-member guard
+/// and the notification scheduler stand down, so the deletion batch is not
+/// answered with "lost access" side effects (which would re-create
+/// `user_settings`).
+
+abstract class _$AccountDeletionInProgress extends $Notifier<bool> {
+  bool build();
+  @$mustCallSuper
+  @override
+  void runBuild() {
+    final ref = this.ref as $Ref<bool, bool>;
+    final element =
+        ref.element
+            as $ClassProviderElement<
+              AnyNotifier<bool, bool>,
+              bool,
+              Object?,
+              Object?
+            >;
+    element.handleCreate(ref, build);
+  }
+}
+
 /// A one-time user message from the company layer (e.g. lost access). The
 /// root widget shows it as a snackbar and [consume]s it.
 
@@ -953,7 +1024,7 @@ final class CompanyAccessGuardProvider
 }
 
 String _$companyAccessGuardHash() =>
-    r'2e84eb08b22c4b15b3ee295737aba6332c4ef293';
+    r'f91548396c697f0e2e0aee047840d4a3e3625ff1';
 
 /// Removed-member handling. Watched by the root widget.
 ///

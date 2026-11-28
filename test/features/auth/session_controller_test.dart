@@ -222,6 +222,26 @@ void main() {
       expect(stageOf(c), AuthStage.locked);
     });
 
+    test('F1: backgrounding again during the resume check is judged on the '
+        'next resume (locks)', () async {
+      final (h, c) = await unlocked();
+      final lock = c.read(lockControllerProvider.notifier);
+      lock.onBackgrounded();
+      h.clock.now = h.clock.now.add(const Duration(seconds: 30));
+      // Resume: the check is async (secure storage read)...
+      final check = lock.onResumed();
+      expect(c.read(lockCheckInFlightProvider), 1);
+      // ...and the app goes to the background again before it finishes.
+      lock.onBackgrounded();
+      expect(c.read(lockControllerProvider), isNotNull);
+      await check;
+      expect(c.read(lockCheckInFlightProvider), 0);
+      expect(stageOf(c), AuthStage.unlocked); // 30 s < 1 min
+      h.clock.now = h.clock.now.add(const Duration(minutes: 2));
+      await lock.onResumed();
+      expect(stageOf(c), AuthStage.locked);
+    });
+
     test('short background stays unlocked', () async {
       final (h, c) = await unlocked();
       final lock = c.read(lockControllerProvider.notifier);

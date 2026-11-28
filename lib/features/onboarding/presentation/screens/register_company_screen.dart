@@ -12,6 +12,7 @@ import '../../../auth/application/session_controller.dart';
 import '../../../auth/presentation/widgets/inline_error.dart';
 import '../../../company/application/company_providers.dart';
 import '../widgets/account_chip.dart';
+import '../widgets/onboarding_account_links.dart';
 import '../widgets/onboarding_layout.dart';
 
 /// "0. Register Your Company": creates the company with the user as owner.
@@ -210,6 +211,7 @@ class _RegisterCompanyScreenState extends ConsumerState<RegisterCompanyScreen> {
             ),
           ),
         ),
+        const OnboardingAccountLinks(),
       ],
     );
   }

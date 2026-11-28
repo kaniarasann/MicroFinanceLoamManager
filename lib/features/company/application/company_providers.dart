@@ -218,6 +218,23 @@ String? activeCompanyName(Ref ref) =>
     ref.watch(activeCompanyProvider).value?.name ??
     ref.watch(activeMembershipProvider)?.companyName;
 
+/// True while this user is deleting their account. The removed-member guard
+/// and the notification scheduler stand down, so the deletion batch is not
+/// answered with "lost access" side effects (which would re-create
+/// `user_settings`).
+@Riverpod(keepAlive: true)
+class AccountDeletionInProgress extends _$AccountDeletionInProgress {
+  @override
+  bool build() {
+    ref.watch(currentUidProvider);
+    return false;
+  }
+
+  void start() => state = true;
+
+  void finish() => state = false;
+}
+
 /// A one-time user message from the company layer (e.g. lost access). The
 /// root widget shows it as a snackbar and [consume]s it.
 @Riverpod(keepAlive: true)
@@ -304,6 +321,7 @@ class CompanyAccessGuard extends _$CompanyAccessGuard {
   Future<void> _verifyDroppedCompany(String cid) async {
     final uid = ref.read(currentUidProvider);
     if (uid == null) return;
+    if (ref.read(accountDeletionInProgressProvider)) return;
     final check = await ref
         .read(companyRepositoryProvider)
         .fetchMemberDocFromServer(cid, uid);
@@ -318,6 +336,7 @@ class CompanyAccessGuard extends _$CompanyAccessGuard {
   Future<void> _onConfirmedRemoval(String cid) async {
     final uid = ref.read(currentUidProvider);
     if (uid == null) return;
+    if (ref.read(accountDeletionInProgressProvider)) return;
     if (ref.read(removedCompaniesProvider).contains(cid)) return; // once
     ref.read(removedCompaniesProvider.notifier).add(cid);
     ref.read(serverConfirmedMembersProvider).remove(cid);

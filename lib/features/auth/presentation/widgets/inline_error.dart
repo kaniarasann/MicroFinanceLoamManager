@@ -27,7 +27,9 @@ class InlineError extends StatelessWidget {
             child: Text(
               message,
               key: const ValueKey<String>('inline_error'),
-              style: AppTextStyles.bodyMd.copyWith(color: AppColors.overdue),
+              style: AppTextStyles.bodyMdTabular.copyWith(
+                color: AppColors.overdue,
+              ),
             ),
           ),
         ],

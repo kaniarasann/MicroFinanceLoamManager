@@ -56,6 +56,17 @@ const String kLockoutMessage =
     'Too many wrong MPIN attempts. Sign in with Google again to set a new '
     'MPIN.';
 
+/// Shown on the sign-in screen after a successful account deletion.
+const String kAccountDeletedMessage =
+    'Your account was deleted. Loan records you entered stay with your '
+    'companies.';
+
+/// Shown when the data was removed but Firebase Auth refused to delete the
+/// sign-in itself.
+const String kAccountDeletionIncompleteMessage =
+    "Your data was removed, but we couldn't delete your Google sign-in. "
+    'Contact support to finish.';
+
 /// Owns [AuthStage]:
 /// - auth stream null → signedOut;
 /// - signed in, no MPIN on this device → needsMpinSetup;
@@ -199,6 +210,49 @@ class SessionController extends _$SessionController {
     }
   }
 
+  /// Change MPIN, step 1: checks the current MPIN while unlocked. Wrong
+  /// entries count towards the same 5-try lockout as the unlock screen; the
+  /// 5th signs the user out with [kLockoutMessage].
+  Future<MpinVerifyResult> verifyCurrentMpin(String pin) async {
+    final user = state.user;
+    if (user == null || state.stage != AuthStage.unlocked) {
+      return const MpinVerifyResult(ok: false, remaining: 0, lockedOut: false);
+    }
+    final result = await _mpin.verify(user.uid, pin);
+    if (!ref.mounted) return result;
+    if (result.lockedOut) await _lockout(user.uid);
+    return result;
+  }
+
+  /// Change MPIN, last step: replaces the MPIN (fresh salt, counter reset).
+  /// The biometric opt-in is kept.
+  Future<void> changeMpin(String newPin) async {
+    final user = state.user;
+    if (user == null || state.stage != AuthStage.unlocked) {
+      throw StateError('Not unlocked');
+    }
+    await _mpin.setMpin(user.uid, newPin);
+  }
+
+  /// Settings → Biometric unlock. Turning it on runs one real prompt first
+  /// and only enables it when that succeeds. Returns the new value.
+  Future<bool> setBiometricEnabled({required bool enabled}) async {
+    final user = state.user;
+    if (user == null || state.stage != AuthStage.unlocked) {
+      return state.biometricEnabled;
+    }
+    if (enabled) {
+      final bio = ref.read(biometricServiceProvider);
+      if (!await bio.canCheck() || !await bio.authenticate()) {
+        return state.biometricEnabled;
+      }
+    }
+    await _mpin.setBiometricEnabled(user.uid, enabled: enabled);
+    if (!ref.mounted) return enabled;
+    state = state.copyWith(biometricEnabled: enabled);
+    return enabled;
+  }
+
   /// Auto-lock: unlocked → locked. No-op in any other stage.
   void lock() {
     if (state.stage == AuthStage.unlocked) {
@@ -212,6 +266,41 @@ class SessionController extends _$SessionController {
       await _repo.signOut();
     } on AppFailure catch (f) {
       developer.log('Sign-out failed: ${f.userMessage}', name: 'auth');
+    }
+  }
+
+  /// Last step of account deletion (the Firestore data is already gone):
+  /// wipes this device's MPIN and deletes the Firebase Auth user. Ends
+  /// signed out with [kAccountDeletedMessage] (or
+  /// [kAccountDeletionIncompleteMessage] when Auth refused).
+  Future<void> completeAccountDeletion() async {
+    final user = state.user;
+    state = const SessionState(
+      stage: AuthStage.signedOut,
+      message: kAccountDeletedMessage,
+    );
+    if (user != null) {
+      try {
+        await _mpin.clear(user.uid);
+      } on Object catch (e) {
+        developer.log('MPIN clear failed', name: 'auth', error: e);
+      }
+    }
+    try {
+      await _repo.deleteAccount();
+    } on Object catch (e) {
+      developer.log('Auth user delete failed', name: 'auth', error: e);
+      if (ref.mounted) {
+        state = const SessionState(
+          stage: AuthStage.signedOut,
+          message: kAccountDeletionIncompleteMessage,
+        );
+      }
+      try {
+        await _repo.signOut();
+      } on Object catch (e) {
+        developer.log('Sign-out failed', name: 'auth', error: e);
+      }
     }
   }
 

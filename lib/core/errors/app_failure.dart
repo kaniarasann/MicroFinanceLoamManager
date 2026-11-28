@@ -30,6 +30,19 @@ final class OfflineRequiredFailure extends AppFailure {
       'You need to be online to do this. Connect and try again.';
 }
 
+/// A write that is saved on this device but not yet acknowledged by the
+/// server (it was sent while offline). [ack] completes when the server
+/// confirms it, or fails if the server rejects it.
+final class AckPendingFailure extends OfflineRequiredFailure {
+  AckPendingFailure(this.ack);
+
+  final Future<void> ack;
+
+  @override
+  String get userMessage =>
+      "Saved on this phone. It will finish when you're back online.";
+}
+
 final class PermissionDeniedFailure extends AppFailure {
   const PermissionDeniedFailure();
 
